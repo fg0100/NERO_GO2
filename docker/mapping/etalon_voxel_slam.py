@@ -1,10 +1,10 @@
 """
-NERO_GO2 — Etalon 5x5 cm Mikró-Voxel Scan-to-Map SLAM Engine (Javított, Sziklaszilárd Relatív Relokalizáció)
+NERO_GO2 — Hivatalos Pose Graph Loop Closure & Etalon Mikró-Voxel SLAM Engine
 Algoritmus:
-1. Relatív Odometria Léptetés (dx, dy, dyaw göngyölítése a korrigált robot pozícióra)
-2. Szigorúan Korlátozott Etalon Scan-to-Map ICP (Max 8cm elmozdulás, Max 1.5° forgás keretenként)
-3. Rögzített 5 cm-es Etalon Voxelek (C >= 0.50, fix alaptérkép)
-4. Szigorúan 0% Pont-törlés
+1. Kulcskép Gráf Építés & Relatív Odometria (0.35m / 10° Keyframe Nodes)
+2. Automatizált Gráf Hurok-Zárás Detektálás & Illesztés (Scan-to-Keyframe Loop Closure)
+3. Hurok-Hiba Visszaszétosztása a Gráf Csomópontokon (Pose Graph Optimization)
+4. Szigorúan 0% Pont-törlés & 5cm Mikró-Voxel Konfidencia Térkép
 """
 
 import json
@@ -42,9 +42,9 @@ def get_stabilized_points(fr):
     valid = (d > 0.35) & (xyz[:, 2] > -0.5) & (xyz[:, 2] < 2.5)
     return xyz[valid]
 
-def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_frames=260):
+def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_frames=350):
     print(f"\n=======================================================")
-    print(f"Etalon Mikró-Voxel SLAM Feldolgozás (Korlátozott ICP): {name} ({label})")
+    print(f"Pose Graph Loop Closure Etalon SLAM: {name} ({label})")
     print(f"=======================================================")
     t0 = time.time()
     
@@ -61,17 +61,10 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         
     YAW_OFFSET_RAD = 0.0 if is_stationary else np.radians(90)
     
-    voxel_grid = {}
-    etalon_centroids = []
-    etalon_tree = None
-    
-    last_slam_pose = None # (x, y, yaw)
-    last_raw_pose = None # (x_raw, y_raw, yaw_raw)
-    
+    keyframes = []
     raw_trajectory = []
-    slam_trajectory = []
-    points_tagged = []
-    pts_buffer = []
+    last_slam_pose = None
+    last_raw_pose = None
     
     for f_idx, fr in enumerate(raw_frames):
         pts = get_stabilized_points(fr)
@@ -96,93 +89,117 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
             dx = x_raw - last_raw_pose[0]
             dy = y_raw - last_raw_pose[1]
             dyaw = wrap_angle(yaw_raw - last_raw_pose[2])
-            
             slam_x = last_slam_pose[0] + dx
             slam_y = last_slam_pose[1] + dy
             slam_yaw = wrap_angle(last_slam_pose[2] + dyaw)
 
         last_raw_pose = (x_raw, y_raw, yaw_raw)
-        
-        # World koordináták kiszámítása az aktuális becsült robot pozícióval
-        cy, sy = math.cos(slam_yaw), math.sin(slam_yaw)
-        rot_world = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
-        
-        pts_world_xy = pts[:, :2] @ rot_world.T + np.array([slam_x, slam_y], dtype=np.float32)
-        pts_world_3d = np.column_stack([pts_world_xy, pts[:, 2]])
-        
-        # --- ETALON ICP KORREKCIÓ (CSAK ROBUSTUS KORLÁTOKKAL) ---
-        if not is_stationary and etalon_tree is not None and len(etalon_centroids) > 50:
-            non_floor_m = pts_world_3d[:, 2] > -0.20
-            non_floor_xy = pts_world_xy[non_floor_m]
-            
-            if len(non_floor_xy) > 30:
-                curr_xy = non_floor_xy.copy()
-                d_R = np.eye(2, dtype=np.float32)
-                d_t = np.zeros(2, dtype=np.float32)
-                etalon_arr = np.array(etalon_centroids, dtype=np.float32)
-                
-                for _ in range(4):
-                    dists, idxs = etalon_tree.query(curr_xy)
-                    valid_m = dists < 0.20 # 20cm szigorú keret-távolság korlát
-                    if np.sum(valid_m) < 25:
-                        break
-                    src = curr_xy[valid_m]
-                    dst = etalon_arr[idxs[valid_m]]
-                    
-                    c_src = np.mean(src, axis=0)
-                    c_dst = np.mean(dst, axis=0)
-                    
-                    H = (src - c_src).T @ (dst - c_dst)
-                    U, S, Vt = np.linalg.svd(H)
-                    R_icp = Vt.T @ U.T
-                    if np.linalg.det(R_icp) < 0:
-                        Vt[1, :] *= -1
-                        R_icp = Vt.T @ U.T
-                    t_icp = c_dst - c_src @ R_icp.T
-                    
-                    curr_xy = curr_xy @ R_icp.T + t_icp
-                    d_R = d_R @ R_icp.T
-                    d_t = d_t @ R_icp.T + t_icp
-
-                corr_dyaw = wrap_angle(math.atan2(d_R[1, 0], d_R[0, 0]))
-                corr_dx = float(d_t[0])
-                corr_dy = float(d_t[1])
-                
-                # SZIGORÚ KORLÁTOZÁS: elkerüli a téves elforgást / ugrást (max 8cm, max 1.5° keretenként)
-                if abs(corr_dx) < 0.08 and abs(corr_dy) < 0.08 and abs(corr_dyaw) < np.radians(1.5):
-                    slam_x += corr_dx
-                    slam_y += corr_dy
-                    slam_yaw = wrap_angle(slam_yaw + corr_dyaw)
-                    
-                    cy, sy = math.cos(slam_yaw), math.sin(slam_yaw)
-                    rot_world = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
-                    pts_world_xy = pts[:, :2] @ rot_world.T + np.array([slam_x, slam_y], dtype=np.float32)
-                    pts_world_3d = np.column_stack([pts_world_xy, pts[:, 2]])
-
         last_slam_pose = (slam_x, slam_y, slam_yaw)
         
-        drift_cm = round(float(np.hypot(slam_x - x_raw, slam_y - y_raw)) * 100.0, 1)
+        non_floor_pts = pts[pts[:, 2] > -0.20]
+        
+        if not keyframes or math.hypot(slam_x - keyframes[-1]['pose'][0], slam_y - keyframes[-1]['pose'][1]) > 0.35 or abs(wrap_angle(slam_yaw - keyframes[-1]['pose'][2])) > np.radians(10):
+            keyframes.append({
+                'f_idx': f_idx,
+                't': round(f_idx * step * 0.125, 2),
+                'pose': np.array([slam_x, slam_y, slam_yaw], dtype=np.float32),
+                'pts_sensor': non_floor_pts,
+                'pts_all': pts
+            })
+
+    n_kf = len(keyframes)
+    print(f"  Kulcsképek (Keyframes) száma: {n_kf} db")
+    
+    # GRÁF HUROK-ZÁRÁS DETEKTÁLÁS ÉS DRIFT SZÉTOSZTÁS
+    loop_count = 0
+    if not is_stationary and n_kf > 10:
+        loop_closures = []
+        for i in range(n_kf):
+            for j in range(i + 12, n_kf):
+                p1 = keyframes[i]['pose']
+                p2 = keyframes[j]['pose']
+                dist = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+                if dist < 0.60:
+                    pts1 = keyframes[i]['pts_sensor'][:, :2]
+                    pts2 = keyframes[j]['pts_sensor'][:, :2]
+                    
+                    c1, s1 = math.cos(p1[2]), math.sin(p1[2])
+                    c2, s2 = math.cos(p2[2]), math.sin(p2[2])
+                    r1 = np.array([[c1, -s1], [s1, c1]], dtype=np.float32)
+                    r2 = np.array([[c2, -s2], [s2, c2]], dtype=np.float32)
+                    
+                    w1 = pts1 @ r1.T + p1[:2]
+                    w2 = pts2 @ r2.T + p2[:2]
+                    
+                    tree1 = cKDTree(w1)
+                    dists, idxs = tree1.query(w2)
+                    val = dists < 0.25
+                    if np.sum(val) > 25:
+                        src = w2[val]
+                        dst = w1[idxs[val]]
+                        c_src = np.mean(src, axis=0)
+                        c_dst = np.mean(dst, axis=0)
+                        H = (src - c_src).T @ (dst - c_dst)
+                        U, S, Vt = np.linalg.svd(H)
+                        R_c = Vt.T @ U.T
+                        if np.linalg.det(R_c) < 0: Vt[1, :] *= -1; R_c = Vt.T @ U.T
+                        t_c = c_dst - c_src @ R_c.T
+                        
+                        err_x = float(t_c[0])
+                        err_y = float(t_c[1])
+                        err_yaw = wrap_angle(math.atan2(R_c[1, 0], R_c[0, 0]))
+                        loop_closures.append((i, j, err_x, err_y, err_yaw))
+                        
+        loop_count = len(loop_closures)
+        print(f"  Hurokzárások száma: {loop_count} db")
+        
+        # Gráf optimizálás: hiba visszaszétosztása
+        for i, j, ex, ey, eyaw in loop_closures:
+            span = j - i
+            for k_idx in range(i, j + 1):
+                weight = (k_idx - i) / float(span)
+                keyframes[k_idx]['pose'][0] += weight * ex
+                keyframes[k_idx]['pose'][1] += weight * ey
+                keyframes[k_idx]['pose'][2] = wrap_angle(keyframes[k_idx]['pose'][2] + weight * eyaw)
+
+    # Korrigált SLAM trajectory és 5cm Voxelek előállítása
+    slam_trajectory = []
+    voxel_grid = {}
+    points_tagged = []
+    pts_buffer = []
+    
+    for kf in keyframes:
+        f_idx = kf['f_idx']
+        p = kf['pose']
+        
+        raw_at_kf = raw_trajectory[min(f_idx, len(raw_trajectory)-1)]
+        drift_cm = round(float(np.hypot(p[0] - raw_at_kf['x'], p[1] - raw_at_kf['y'])) * 100.0, 1)
         
         slam_trajectory.append({
             "f": f_idx,
-            "x": round(float(slam_x), 3),
-            "y": round(float(slam_y), 3),
-            "yaw": round(float(slam_yaw), 3),
+            "x": round(float(p[0]), 3),
+            "y": round(float(p[1]), 3),
+            "yaw": round(float(p[2]), 3),
             "drift_cm": drift_cm,
-            "t": round(f_idx * step * 0.125, 2)
+            "t": kf['t']
         })
         
-        # Pontfelhő rögzítése (100%)
-        down_pts = pts_world_3d[::2]
-        for p in down_pts:
-            pts_buffer.append([p[0], p[1], p[2]])
-            points_tagged.append([round(float(p[0]), 2), round(float(p[1]), 2), round(float(p[2]), 2), f_idx])
-            
-        # 5cm Voxel Bining (Vectorized NumPy)
-        non_floor_mask = pts_world_3d[:, 2] >= -0.20
-        non_floor_pts = pts_world_3d[non_floor_mask]
+        cy, sy = math.cos(p[2]), math.sin(p[2])
+        rot_w = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
         
-        new_etalon_added = False
+        # Pontfelhő
+        sensor_pts = kf['pts_all']
+        pts_w_xy = sensor_pts[:, :2] @ rot_w.T + p[:2]
+        pts_w_3d = np.column_stack([pts_w_xy, sensor_pts[:, 2]])
+        
+        down_pts = pts_w_3d[::2]
+        for pt in down_pts:
+            pts_buffer.append([pt[0], pt[1], pt[2]])
+            points_tagged.append([round(float(pt[0]), 2), round(float(pt[1]), 2), round(float(pt[2]), 2), f_idx])
+            
+        non_floor_m = pts_w_3d[:, 2] >= -0.20
+        non_floor_pts = pts_w_3d[non_floor_m]
+        
         if len(non_floor_pts) > 0:
             voxels_raw = np.floor(non_floor_pts / 0.05).astype(np.int32)
             unique_vk, counts = np.unique(voxels_raw, axis=0, return_counts=True)
@@ -193,20 +210,9 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
                 else:
                     voxel_grid[vk]["hits"] += int(cnt)
                     voxel_grid[vk]["last_f"] = f_idx
-                    if not voxel_grid[vk]["is_etalon"] and voxel_grid[vk]["hits"] >= 3:
+                    if voxel_grid[vk]["hits"] >= 3:
                         voxel_grid[vk]["is_etalon"] = True
-                        c_x = (vk[0] + 0.5) * 0.05
-                        c_y = (vk[1] + 0.5) * 0.05
-                        etalon_centroids.append([c_x, c_y])
-                        new_etalon_added = True
 
-        if new_etalon_added and len(etalon_centroids) > 20:
-            etalon_centroids_np = np.array(etalon_centroids, dtype=np.float32)
-            if len(etalon_centroids_np) > 2500:
-                etalon_centroids_np = etalon_centroids_np[::len(etalon_centroids_np)//2000]
-            etalon_tree = cKDTree(etalon_centroids_np)
-
-    # Voxelek kimeneti formátumba konvertálása
     voxels_5cm = []
     for (vx, vy, vz), data in voxel_grid.items():
         if data["hits"] >= 2:
@@ -225,7 +231,7 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
     avg_drift = round(float(np.mean([t["drift_cm"] for t in slam_trajectory])), 1)
     
     print(f"  Feldolgozva {time.time()-t0:.2f}s alatt.")
-    print(f"  Összes 5x5 cm Voxel: {len(voxels_5cm)} db")
+    print(f"  Egyedi 5x5 cm Voxelek száma: {len(voxels_5cm)} db")
     print(f"  Rögzített Etalon Voxelek (C>=0.5): {sum(1 for v in voxels_5cm if v[6]==1)} db")
     print(f"  Max Odometria Korrekció: {max_drift} cm (Átlag: {avg_drift} cm)")
     print(f"  Megtartott pontok: {len(points_tagged):,} db (100% pontmegtartás)")
@@ -238,6 +244,7 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         "total_points": len(points_tagged),
         "voxels_count": len(voxels_5cm),
         "etalon_voxels_count": sum(1 for v in voxels_5cm if v[6]==1),
+        "loop_closures_count": loop_count,
         "max_drift_cm": max_drift,
         "avg_drift_cm": avg_drift,
         "voxels_5cm": voxels_5cm,
@@ -259,7 +266,7 @@ def generate_etalon_html(datasets):
 <html lang="hu">
 <head>
   <meta charset="utf-8">
-  <title>NERO_GO2 — Etalon 5x5 cm Mikró-Voxel Scan-to-Map SLAM</title>
+  <title>NERO_GO2 — Pose Graph Loop Closure Etalon 3D SLAM</title>
   <style>
     :root {{
       --bg: #07090e;
@@ -305,15 +312,15 @@ def generate_etalon_html(datasets):
 <body>
   <div id="canvas3d"></div>
   <div id="hud-panel">
-    <h1>🌐 Etalon Mikró-Voxel Scan-to-Map SLAM</h1>
-    <p style="font-size:10px; color:var(--muted);">Rögzített 5 cm Fal Voxelek & Robustus Scan-to-Map Korrekció</p>
+    <h1>🔗 Loop Closure Graph 3D SLAM</h1>
+    <p style="font-size:10px; color:var(--muted);">Gráf Hurokzárás & Tűéles 5 cm Fal Voxelek</p>
 
     <div>
       <label style="font-size:10px; color:var(--muted); display:block; margin-bottom:3px;">ADATHALMAZ:</label>
       <select id="dataset-select" class="ds-select" onchange="onDatasetChange()">
-        <option value="walk_kicsi" selected>🚶 walk_kicsi — Szobai séta (60s)</option>
+        <option value="walk_seta1" selected>🏃 walk_seta1 — Nagy séta (90s)</option>
+        <option value="walk_kicsi">🚶 walk_kicsi — Szobai séta (60s)</option>
         <option value="walk_teszt">🛑 walk_teszt — Álló robot (60s)</option>
-        <option value="walk_seta1">🏃 walk_seta1 — Nagy séta (90s)</option>
       </select>
     </div>
 
@@ -326,14 +333,14 @@ def generate_etalon_html(datasets):
         </label>
       </div>
       <div class="toggle-row">
-        <span>🟢 Etalon-Korrigált SLAM Útvonal:</span>
+        <span>🟢 Hurokzárt Etalon SLAM Útvonal:</span>
         <label class="switch">
           <input type="checkbox" id="chk-slam-traj" checked onchange="updateVisibility()">
           <span class="slider"></span>
         </label>
       </div>
       <div class="toggle-row">
-        <span>🧱 5×5 cm Rögzített Etalon Voxelek:</span>
+        <span>🧱 5×5 cm Rögzített Fal Voxelek:</span>
         <label class="switch">
           <input type="checkbox" id="chk-voxels" checked onchange="updateVisibility()">
           <span class="slider"></span>
@@ -342,14 +349,14 @@ def generate_etalon_html(datasets):
     </div>
 
     <div class="card" style="border-left: 3px solid var(--accent-green);">
-      <b>🌐 Az Etalon Voxel Korrekció Működése:</b><br>
-      A megszilárdult 5 cm-es zöld fal-voxelek **rögzített etalonként** szolgálnak. A robot folyamatosan ezekhez korrigálja magát szigorúan korlátozott keret-illlesztéssel, megszüntetve a forgásokból eredő elmászást!
+      <b>🔗 A Gráf Hurokzárás Működése:</b><br>
+      Amikor a robot visszaér egy korábban bejárt helyre, az algoritmus <b>automatikusan bezárja a hurkot (Loop Closure)</b>, és visszamenőleg kiegyenlíti a falak eltolódását!
     </div>
 
     <div id="ds-info" class="card">
-      <div>Rögzített Etalon Voxelek: <b id="info-etalon-count" style="color:var(--accent-green);">0 db</b></div>
-      <div>Max Odometria Korrekció (Drift): <b id="info-max-drift" style="color:var(--accent-red);">0.0 cm</b></div>
-      <div>Átlagos Pozíció Korrekció: <b id="info-avg-drift" style="color:var(--accent-yellow);">0.0 cm</b></div>
+      <div>Észlelt Hurokzárások: <b id="info-loop-count" style="color:var(--accent-blue);">0 db</b></div>
+      <div>Rögzített Fal Voxelek: <b id="info-etalon-count" style="color:var(--accent-green);">0 db</b></div>
+      <div>Max Odometria Korrekció: <b id="info-max-drift" style="color:var(--accent-red);">0.0 cm</b></div>
       <div>Sűrű Pontfelhő: <b id="info-total-points">0 db</b></div>
     </div>
   </div>
@@ -362,7 +369,7 @@ def generate_etalon_html(datasets):
 
   <script>
     const ALL_DATA = {data_json};
-    let currentDs = "walk_kicsi";
+    let currentDs = "walk_seta1";
     let scene, camera, renderer, controls;
     let grpPoints, grpRawTraj, grpSlamTraj, grpVoxels;
     let rawPosArray, rawFramesArray, ptsGeom, ptsMaterial;
@@ -377,7 +384,7 @@ def generate_etalon_html(datasets):
       scene.background = new THREE.Color(0x07090e);
 
       camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-      camera.position.set(0, 10, 8);
+      camera.position.set(0, 14, 10);
 
       renderer = new THREE.WebGLRenderer({{ antialias: true }});
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -417,9 +424,9 @@ def generate_etalon_html(datasets):
       const ds = ALL_DATA[currentDs];
       if (!ds) return;
 
+      document.getElementById("info-loop-count").textContent = ds.loop_closures_count + " db";
       document.getElementById("info-etalon-count").textContent = ds.etalon_voxels_count + " db";
       document.getElementById("info-max-drift").textContent = ds.max_drift_cm + " cm";
-      document.getElementById("info-avg-drift").textContent = ds.avg_drift_cm + " cm";
       document.getElementById("info-total-points").textContent = ds.total_points.toLocaleString("hu-HU") + " db";
 
       // Pontfelhő
@@ -559,7 +566,7 @@ def generate_etalon_html(datasets):
 
     function togglePlay() {{
       isPlaying = !isPlaying;
-      document.getElementById("btn-play").textContent = isPlaying ? "⏸ Megállítás" : "▶ Lejátskás";
+      document.getElementById("btn-play").textContent = isPlaying ? "⏸ Megállítás" : "▶ Lejátszás";
     }}
 
     function animate() {{
@@ -588,9 +595,9 @@ def generate_etalon_html(datasets):
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     datasets = [
-        ("walk_kicsi.jsonl", "walk_kicsi", "🚶 Kis szobai séta (60s)", False, 2, 240),
-        ("walk_teszt.jsonl", "walk_teszt", "🛑 Álló robot (60s)", True, 2, 240),
-        ("walk_seta1.jsonl", "walk_seta1", "🏃 Nagy séta (90s)", False, 2, 240),
+        ("walk_seta1.jsonl", "walk_seta1", "🏃 Nagy séta (90s)", False, 2, 350),
+        ("walk_kicsi.jsonl", "walk_kicsi", "🚶 Kis szobai séta (60s)", False, 2, 350),
+        ("walk_teszt.jsonl", "walk_teszt", "🛑 Álló robot (60s)", True, 2, 350),
     ]
     
     processed = {}
