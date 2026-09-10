@@ -36,6 +36,11 @@ Ez a modul felelős a Unitree Go2 robot fedélzeti Hesai 3D LiDAR adatainak feld
   - 🟢 **Globális Fal-Horgonyzás:** Bemutatja az eredeti fali horgonyzat ráragasztását pontvesztés nélkül.
 * **Elérés:** `http://localhost:8088/compare_3d.html`
 
+### Opció 4: Inkremens 3D Konfidencia-Box SLAM (`incremental_confidence_slam.py` / `confidence_slam.html`)
+* **Működés:** Ahogy telik az idő, a robot fokozatosan észleli a falakat, asztalokat és tereptárgyakat. Minden tárgy egy **Konfidencia pontszámot ($C \in [0.0, 1.0]$)** kap. Amikor $C \ge 0.50$, a tárgy megszilárdult zöld 3D Bounding Box-szá válik a térben.
+* **Elérés:** `http://localhost:8088/confidence_slam.html`
+* **Használat:** Folyamatos 3D objektum-szilárdítás és 2D alapsík-térképezés szemléltetésére.
+
 ---
 
 ## 💻 Parancsok & Futtatás
@@ -45,7 +50,8 @@ Ez a modul felelős a Unitree Go2 robot fedélzeti Hesai 3D LiDAR adatainak feld
 python -m http.server 8088 --directory docker/mapping
 
 # 2. SLAM opciók újra-feldolgozása
-python keyframe_slam.py   # Generálja a keyframe_slam.html-t
-python planar_slam.py     # Generálja a planar_slam.html-t
-python benchmark_3d.py     # Generálja a compare_3d.html-t
+python incremental_confidence_slam.py  # Generálja a confidence_slam.html-t
+python keyframe_slam.py              # Generálja a keyframe_slam.html-t
+python planar_slam.py                # Generálja a planar_slam.html-t
+python benchmark_3d.py                # Generálja a compare_3d.html-t
 ```
