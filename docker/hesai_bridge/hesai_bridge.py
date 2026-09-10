@@ -169,11 +169,11 @@ def _udp_listener():
 
         now = time.time()
         if now - last_publish >= FRAME_INTERVAL_S:
-            # Ritkítás, hogy a HTTP-válasz ne nőjön parttalanul nagyra.
+            # Maximális belső puffer: 35 000 pont
             pts = frame_buffer
-            if len(pts) > 8000:
-                step = len(pts) // 8000
-                pts = pts[::step][:8000]
+            if len(pts) > 35000:
+                step = len(pts) // 35000
+                pts = pts[::step][:35000]
             _set_state(latest_points=pts)
             frame_buffer = []
             last_publish = now
@@ -191,13 +191,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         s = _get_state()
-        if self.path == "/health":
+        path_parts = self.path.split("?")
+        req_path = path_parts[0]
+        query_str = path_parts[1] if len(path_parts) > 1 else ""
+
+        if req_path == "/health":
             self._send_json({"status": "ok", "connected": s["connected"], "packet_count": s["packet_count"]})
-        elif self.path == "/lidar":
+        elif req_path == "/lidar":
             if s["latest_points"] is None:
                 self._send_json({"error": "no lidar data yet"}, status=404)
             else:
-                self._send_json(s["latest_points"])
+                pts = s["latest_points"]
+                limit = 18000
+                if "limit=" in query_str:
+                    try:
+                        for p in query_str.split("&"):
+                            if p.startswith("limit="):
+                                limit = max(1000, min(40000, int(p.split("=")[1])))
+                    except Exception:
+                        pass
+                if len(pts) > limit:
+                    step = len(pts) // limit
+                    pts = pts[::step][:limit]
+                self._send_json(pts)
         else:
             self._send_json({"error": "not found"}, status=404)
 
