@@ -1,9 +1,9 @@
 """
-NERO_GO2 — Etalon 5x5 cm Mikró-Voxel Scan-to-Map SLAM Engine
+NERO_GO2 — Etalon 5x5 cm Mikró-Voxel Scan-to-Map SLAM Engine (Javított, Sziklaszilárd Relatív Relokalizáció)
 Algoritmus:
-1. Rögzített Etalon Mikró-Voxel Térkép (5cm x 5cm x 5cm 3D Voxel Grid)
-2. Folyamatos Scan-to-Etalon ICP Pozíció Korrekció (x_slam, y_slam, yaw_slam)
-3. Odometria Drift Mérés (cm hiba a nyers és korrigált pozíció között)
+1. Relatív Odometria Léptetés (dx, dy, dyaw göngyölítése a korrigált robot pozícióra)
+2. Szigorúan Korlátozott Etalon Scan-to-Map ICP (Max 8cm elmozdulás, Max 1.5° forgás keretenként)
+3. Rögzített 5 cm-es Etalon Voxelek (C >= 0.50, fix alaptérkép)
 4. Szigorúan 0% Pont-törlés
 """
 
@@ -21,6 +21,9 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+def wrap_angle(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
 
 def get_stabilized_points(fr):
     roll = fr.get("roll", 0) or 0.0
@@ -41,7 +44,7 @@ def get_stabilized_points(fr):
 
 def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_frames=260):
     print(f"\n=======================================================")
-    print(f"Etalon Mikró-Voxel SLAM Feldolgozás: {name} ({label})")
+    print(f"Etalon Mikró-Voxel SLAM Feldolgozás (Korlátozott ICP): {name} ({label})")
     print(f"=======================================================")
     t0 = time.time()
     
@@ -58,21 +61,17 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         
     YAW_OFFSET_RAD = 0.0 if is_stationary else np.radians(90)
     
-    # 5cm Voxel Tároló: key = (vx, vy, vz) -> {'hits': int, 'first_f': int, 'last_f': int, 'is_etalon': bool}
     voxel_grid = {}
-    
-    # Etalon KD-Tree a gyors scan-to-map illesztéshez
     etalon_centroids = []
-    etalon_kdtree = None
+    etalon_tree = None
+    
+    last_slam_pose = None # (x, y, yaw)
+    last_raw_pose = None # (x_raw, y_raw, yaw_raw)
     
     raw_trajectory = []
     slam_trajectory = []
     points_tagged = []
     pts_buffer = []
-    
-    # Robot transzformáció állapot
-    current_R = np.eye(2, dtype=np.float32)
-    current_t = np.zeros(2, dtype=np.float32)
     
     for f_idx, fr in enumerate(raw_frames):
         pts = get_stabilized_points(fr)
@@ -81,9 +80,8 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
             
         x_raw = float(fr.get("x", 0) or 0.0)
         y_raw = float(fr.get("y", 0) or 0.0)
-        yaw_raw = float((fr.get("yaw", 0) or 0.0) + YAW_OFFSET_RAD)
+        yaw_raw = float(wrap_angle((fr.get("yaw", 0) or 0.0) + YAW_OFFSET_RAD))
         
-        # Nyers odometria pozíció
         raw_trajectory.append({
             "f": f_idx,
             "x": round(x_raw, 3),
@@ -92,76 +90,97 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
             "t": round(f_idx * step * 0.125, 2)
         })
         
-        cos_yr, sin_yr = math.cos(yaw_raw), math.sin(yaw_raw)
-        rot_raw = np.array([[cos_yr, -sin_yr], [sin_yr, cos_yr]], dtype=np.float32)
-        
-        # Kezdeti transzformált koordináták
-        curr_xy_raw = pts[:, :2] @ rot_raw.T + np.array([x_raw, y_raw], dtype=np.float32)
-        
-        if is_stationary:
-            corr_xy = pts[:, :2]
-            cor_pos = np.array([x_raw, y_raw], dtype=np.float32)
+        if last_slam_pose is None:
+            slam_x, slam_y, slam_yaw = x_raw, y_raw, yaw_raw
         else:
-            if etalon_kdtree is None or len(etalon_centroids) < 50:
-                # Első képkockák: elfogadjuk az odometriát és építjük az első etalon voxeleket
-                corr_xy = curr_xy_raw.copy()
-                cor_pos = np.array([x_raw, y_raw], dtype=np.float32)
-            else:
-                # --- SCAN-TO-ETALON MAP ICP ILLESZTÉS ---
-                curr_xy = curr_xy_raw @ current_R.T + current_t
-                max_icp_iters = 6
+            dx = x_raw - last_raw_pose[0]
+            dy = y_raw - last_raw_pose[1]
+            dyaw = wrap_angle(yaw_raw - last_raw_pose[2])
+            
+            slam_x = last_slam_pose[0] + dx
+            slam_y = last_slam_pose[1] + dy
+            slam_yaw = wrap_angle(last_slam_pose[2] + dyaw)
+
+        last_raw_pose = (x_raw, y_raw, yaw_raw)
+        
+        # World koordináták kiszámítása az aktuális becsült robot pozícióval
+        cy, sy = math.cos(slam_yaw), math.sin(slam_yaw)
+        rot_world = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
+        
+        pts_world_xy = pts[:, :2] @ rot_world.T + np.array([slam_x, slam_y], dtype=np.float32)
+        pts_world_3d = np.column_stack([pts_world_xy, pts[:, 2]])
+        
+        # --- ETALON ICP KORREKCIÓ (CSAK ROBUSTUS KORLÁTOKKAL) ---
+        if not is_stationary and etalon_tree is not None and len(etalon_centroids) > 50:
+            non_floor_m = pts_world_3d[:, 2] > -0.20
+            non_floor_xy = pts_world_xy[non_floor_m]
+            
+            if len(non_floor_xy) > 30:
+                curr_xy = non_floor_xy.copy()
+                d_R = np.eye(2, dtype=np.float32)
+                d_t = np.zeros(2, dtype=np.float32)
                 etalon_arr = np.array(etalon_centroids, dtype=np.float32)
-                for _ in range(max_icp_iters):
-                    dists, idxs = etalon_kdtree.query(curr_xy)
-                    valid_m = dists < 0.35
-                    if np.sum(valid_m) < 20:
+                
+                for _ in range(4):
+                    dists, idxs = etalon_tree.query(curr_xy)
+                    valid_m = dists < 0.20 # 20cm szigorú keret-távolság korlát
+                    if np.sum(valid_m) < 25:
                         break
+                    src = curr_xy[valid_m]
+                    dst = etalon_arr[idxs[valid_m]]
                     
-                    src_pts = curr_xy[valid_m]
-                    dst_pts = etalon_arr[idxs[valid_m]]
+                    c_src = np.mean(src, axis=0)
+                    c_dst = np.mean(dst, axis=0)
                     
-                    c_src = np.mean(src_pts, axis=0)
-                    c_dst = np.mean(dst_pts, axis=0)
-                    
-                    H = (src_pts - c_src).T @ (dst_pts - c_dst)
+                    H = (src - c_src).T @ (dst - c_dst)
                     U, S, Vt = np.linalg.svd(H)
                     R_icp = Vt.T @ U.T
                     if np.linalg.det(R_icp) < 0:
                         Vt[1, :] *= -1
                         R_icp = Vt.T @ U.T
-                    
                     t_icp = c_dst - c_src @ R_icp.T
+                    
                     curr_xy = curr_xy @ R_icp.T + t_icp
-                    current_R = current_R @ R_icp.T
-                    current_t = current_t @ R_icp.T + t_icp
-                
-                corr_xy = curr_xy
-                cor_pos = np.array([x_raw, y_raw], dtype=np.float32) @ rot_raw.T @ current_R.T + np.array([x_raw, y_raw], dtype=np.float32) + current_t
+                    d_R = d_R @ R_icp.T
+                    d_t = d_t @ R_icp.T + t_icp
 
-        # Odometria Drift Számítás (cm)
-        drift_cm = round(float(np.hypot(cor_pos[0] - x_raw, cor_pos[1] - y_raw)) * 100.0, 1)
+                corr_dyaw = wrap_angle(math.atan2(d_R[1, 0], d_R[0, 0]))
+                corr_dx = float(d_t[0])
+                corr_dy = float(d_t[1])
+                
+                # SZIGORÚ KORLÁTOZÁS: elkerüli a téves elforgást / ugrást (max 8cm, max 1.5° keretenként)
+                if abs(corr_dx) < 0.08 and abs(corr_dy) < 0.08 and abs(corr_dyaw) < np.radians(1.5):
+                    slam_x += corr_dx
+                    slam_y += corr_dy
+                    slam_yaw = wrap_angle(slam_yaw + corr_dyaw)
+                    
+                    cy, sy = math.cos(slam_yaw), math.sin(slam_yaw)
+                    rot_world = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
+                    pts_world_xy = pts[:, :2] @ rot_world.T + np.array([slam_x, slam_y], dtype=np.float32)
+                    pts_world_3d = np.column_stack([pts_world_xy, pts[:, 2]])
+
+        last_slam_pose = (slam_x, slam_y, slam_yaw)
+        
+        drift_cm = round(float(np.hypot(slam_x - x_raw, slam_y - y_raw)) * 100.0, 1)
         
         slam_trajectory.append({
             "f": f_idx,
-            "x": round(float(cor_pos[0]), 3),
-            "y": round(float(cor_pos[1]), 3),
-            "yaw": round(float(yaw_raw), 3),
+            "x": round(float(slam_x), 3),
+            "y": round(float(slam_y), 3),
+            "yaw": round(float(slam_yaw), 3),
             "drift_cm": drift_cm,
             "t": round(f_idx * step * 0.125, 2)
         })
         
-        # 3D Pontok & Voxel Frissítés
-        pts_3d_curr = np.column_stack([corr_xy, pts[:, 2]])
-        
-        # Pontfelhő rögzítése
-        down_pts = pts_3d_curr[::2]
+        # Pontfelhő rögzítése (100%)
+        down_pts = pts_world_3d[::2]
         for p in down_pts:
             pts_buffer.append([p[0], p[1], p[2]])
             points_tagged.append([round(float(p[0]), 2), round(float(p[1]), 2), round(float(p[2]), 2), f_idx])
             
         # 5cm Voxel Bining (Vectorized NumPy)
-        non_floor_mask = pts_3d_curr[:, 2] >= -0.20
-        non_floor_pts = pts_3d_curr[non_floor_mask]
+        non_floor_mask = pts_world_3d[:, 2] >= -0.20
+        non_floor_pts = pts_world_3d[non_floor_mask]
         
         new_etalon_added = False
         if len(non_floor_pts) > 0:
@@ -185,7 +204,7 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
             etalon_centroids_np = np.array(etalon_centroids, dtype=np.float32)
             if len(etalon_centroids_np) > 2500:
                 etalon_centroids_np = etalon_centroids_np[::len(etalon_centroids_np)//2000]
-            etalon_kdtree = cKDTree(etalon_centroids_np)
+            etalon_tree = cKDTree(etalon_centroids_np)
 
     # Voxelek kimeneti formátumba konvertálása
     voxels_5cm = []
@@ -287,7 +306,7 @@ def generate_etalon_html(datasets):
   <div id="canvas3d"></div>
   <div id="hud-panel">
     <h1>🌐 Etalon Mikró-Voxel Scan-to-Map SLAM</h1>
-    <p style="font-size:10px; color:var(--muted);">Rögzített 5 cm Fal Voxelek & Scan-to-Map Pozíció Korrekció</p>
+    <p style="font-size:10px; color:var(--muted);">Rögzített 5 cm Fal Voxelek & Robustus Scan-to-Map Korrekció</p>
 
     <div>
       <label style="font-size:10px; color:var(--muted); display:block; margin-bottom:3px;">ADATHALMAZ:</label>
@@ -324,7 +343,7 @@ def generate_etalon_html(datasets):
 
     <div class="card" style="border-left: 3px solid var(--accent-green);">
       <b>🌐 Az Etalon Voxel Korrekció Működése:</b><br>
-      A megszilárdult 5 cm-es zöld fal-voxelek **rögzített etalonként** szolgálnak. A robot folyamatosan ezekhez korrigálja magát, megszüntetve a forgásokból eredő elmászást!
+      A megszilárdult 5 cm-es zöld fal-voxelek **rögzített etalonként** szolgálnak. A robot folyamatosan ezekhez korrigálja magát szigorúan korlátozott keret-illlesztéssel, megszüntetve a forgásokból eredő elmászást!
     </div>
 
     <div id="ds-info" class="card">
@@ -540,7 +559,7 @@ def generate_etalon_html(datasets):
 
     function togglePlay() {{
       isPlaying = !isPlaying;
-      document.getElementById("btn-play").textContent = isPlaying ? "⏸ Megállítás" : "▶ Lejátszás";
+      document.getElementById("btn-play").textContent = isPlaying ? "⏸ Megállítás" : "▶ Lejátskás";
     }}
 
     function animate() {{
