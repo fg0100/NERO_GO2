@@ -42,6 +42,7 @@ MAX_VYAW = float(os.environ.get("MAX_VYAW", "1.0"))
 COMMAND_TIMEOUT_S = float(os.environ.get("COMMAND_TIMEOUT_S", "0.5"))
 
 API_TOKEN = os.environ.get("MC_API_TOKEN", "")
+READONLY = os.environ.get("ROBOT_READONLY", "0") == "1"
 
 app = FastAPI(title="mission-control: core")
 robot = get_robot_client()
@@ -169,8 +170,11 @@ def _link_health() -> dict:
 
 @app.get("/state")
 def state():
+    # Absent rather than the origin when the robot has no position fix.
+    has_pose = getattr(robot, "has_pose", lambda: True)()
     return {
-        "pose": robot.get_pose().to_dict(),
+        "readonly": READONLY,
+        "pose": robot.get_pose().to_dict() if has_pose else None,
         "battery": robot.get_battery().to_dict(),
         "imu": robot.get_imu().to_dict(),
         "armed": robot.is_armed(),
@@ -188,11 +192,13 @@ def armed():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "pillar": "core", "link": _link_health()}
+    return {"ok": True, "pillar": "core", "readonly": READONLY, "link": _link_health()}
 
 
 @app.post("/arm", dependencies=[Depends(require_token)])
 def arm():
+    if READONLY:
+        raise HTTPException(status_code=403, detail="ROBOT_READONLY=1 -- arming is disabled")
     link = _link_health()
     if link["tracked"] and not link["healthy"]:
         raise HTTPException(status_code=409, detail="refusing to arm: telemetry link is stale")
@@ -229,6 +235,8 @@ def estop():
 @app.post("/move", dependencies=[Depends(require_token)])
 def move(cmd: MoveCmd):
     global _last_cmd_t
+    if READONLY:
+        raise HTTPException(status_code=403, detail="ROBOT_READONLY=1 -- movement is disabled")
     if not robot.is_armed():
         raise HTTPException(status_code=409, detail="robot is not armed, command dropped")
     link = _link_health()

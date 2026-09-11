@@ -41,6 +41,12 @@ MAX_VYAW = float(os.environ.get("MAX_VYAW", "1.0"))
 
 LINK_MAX_AGE_S = float(os.environ.get("LINK_MAX_AGE_S", "1.5"))
 
+# Hard, source-level movement lock. With this set the SportClient is never
+# initialised and every move() raises, so no code path -- API, pillar or
+# bug -- can command the robot. Used when the console is attached purely
+# for observation.
+READONLY = os.environ.get("ROBOT_READONLY", "0") == "1"
+
 
 def _clamp(v: float, limit: float) -> float:
     if v != v:  # NaN
@@ -57,6 +63,10 @@ class LiveRobotClient(RobotClient):
         self._init_sdk()
 
     def _init_sdk(self):
+        if READONLY:
+            print("[live_client] ROBOT_READONLY=1 -- SportClient NOT initialised, "
+                  "movement is refused at the source.")
+            return
         try:
             from unitree_sdk2py.core.channel import ChannelFactoryInitialize
             from unitree_sdk2py.go2.sport.sport_client import SportClient
@@ -98,6 +108,13 @@ class LiveRobotClient(RobotClient):
 
     # -- state readers -------------------------------------------------
 
+    def has_pose(self) -> bool:
+        """sportmodestate only publishes while sport mode is active. Until it
+        does there is no position at all -- callers must show it as absent
+        rather than as the origin."""
+        sms = self._state().get("sportmodestate")
+        return bool(sms) and sms.get("position") is not None
+
     def get_pose(self) -> Pose:
         sms = self._state().get("sportmodestate") or {}
         pos = sms.get("position") or [0.0, 0.0, 0.0]
@@ -120,6 +137,8 @@ class LiveRobotClient(RobotClient):
     def get_imu(self) -> ImuSample:
         imu = (self._state().get("lowstate") or {}).get("imu_state") or {}
         rpy = imu.get("rpy") or [0.0, 0.0, 0.0]
+        # Verified against the live robot 2026-09-11: rt/lf/lowstate carries
+        # imu_state.rpy but no accelerometer, so accel_z stays nominal.
         acc = imu.get("accelerometer") or [0.0, 0.0, 9.81]
         return ImuSample(roll=float(rpy[0]), pitch=float(rpy[1]), yaw=float(rpy[2]),
                           accel_z=float(acc[2]))
@@ -149,6 +168,8 @@ class LiveRobotClient(RobotClient):
     # -- commands ------------------------------------------------------
 
     def move(self, vx: float, vy: float, vyaw: float) -> None:
+        if READONLY:
+            raise PermissionError("ROBOT_READONLY=1 -- movement is disabled")
         if self._sport_client is None:
             raise RuntimeError("SportClient unavailable -- movement command NOT delivered")
         if not self._armed:
@@ -162,7 +183,7 @@ class LiveRobotClient(RobotClient):
             raise RuntimeError(f"SportClient.Move returned error code {code}")
 
     def stop(self) -> None:
-        if self._sport_client is None:
+        if READONLY or self._sport_client is None:
             return
         try:
             self._sport_client.Move(0.0, 0.0, 0.0)
@@ -173,6 +194,8 @@ class LiveRobotClient(RobotClient):
         return self._armed
 
     def set_armed(self, value: bool) -> None:
+        if value and READONLY:
+            raise PermissionError("ROBOT_READONLY=1 -- arming is disabled")
         self._armed = value
         if not value:
             self.stop()
