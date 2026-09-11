@@ -1,10 +1,11 @@
 """
-NERO_GO2 — Hivatalos Pose Graph Loop Closure & Etalon Mikró-Voxel SLAM Engine
+NERO_GO2 — Hivatalos Pose Graph Loop Closure & Etalon Mikró-Voxel SLAM Engine (Zero-Offset Precision Mapping)
 Algoritmus:
-1. Kulcskép Gráf Építés & Relatív Odometria (0.35m / 10° Keyframe Nodes)
-2. Automatizált Gráf Hurok-Zárás Detektálás & Illesztés (Scan-to-Keyframe Loop Closure)
-3. Hurok-Hiba Visszaszétosztása a Gráf Csomópontokon (Pose Graph Optimization)
-4. Szigorúan 0% Pont-törlés & 5cm Mikró-Voxel Konfidencia Térkép
+1. Helyes Hesai-to-Go2 IMU Illesztés (YAW_OFFSET = 0.0 rad)
+2. Kulcskép Gráf Építés & Relatív Odometria (0.30m / 8° Keyframe Nodes)
+3. Automatizált Gráf Hurok-Zárás Detektálás (Scan-to-Keyframe Loop Closure)
+4. Térkép Újraépítés Kereszt-Duplikációk Nélkül
+5. Szigorúan 0% Pont-törlés & 5cm Mikró-Voxel Konfidencia Térkép
 """
 
 import json
@@ -44,7 +45,7 @@ def get_stabilized_points(fr):
 
 def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_frames=350):
     print(f"\n=======================================================")
-    print(f"Pose Graph Loop Closure Etalon SLAM: {name} ({label})")
+    print(f"Pose Graph Loop Closure Etalon SLAM (Zero-Offset): {name} ({label})")
     print(f"=======================================================")
     t0 = time.time()
     
@@ -59,7 +60,7 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
     if not raw_frames:
         return None
         
-    YAW_OFFSET_RAD = 0.0 if is_stationary else np.radians(90)
+    YAW_OFFSET_RAD = 0.0
     
     keyframes = []
     raw_trajectory = []
@@ -98,7 +99,7 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         
         non_floor_pts = pts[pts[:, 2] > -0.20]
         
-        if not keyframes or math.hypot(slam_x - keyframes[-1]['pose'][0], slam_y - keyframes[-1]['pose'][1]) > 0.35 or abs(wrap_angle(slam_yaw - keyframes[-1]['pose'][2])) > np.radians(10):
+        if not keyframes or math.hypot(slam_x - keyframes[-1]['pose'][0], slam_y - keyframes[-1]['pose'][1]) > 0.30 or abs(wrap_angle(slam_yaw - keyframes[-1]['pose'][2])) > np.radians(8):
             keyframes.append({
                 'f_idx': f_idx,
                 't': round(f_idx * step * 0.125, 2),
@@ -110,12 +111,11 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
     n_kf = len(keyframes)
     print(f"  Kulcsképek (Keyframes) száma: {n_kf} db")
     
-    # GRÁF HUROK-ZÁRÁS DETEKTÁLÁS ÉS DRIFT SZÉTOSZTÁS
     loop_count = 0
     if not is_stationary and n_kf > 10:
         loop_closures = []
         for i in range(n_kf):
-            for j in range(i + 12, n_kf):
+            for j in range(i + 10, n_kf):
                 p1 = keyframes[i]['pose']
                 p2 = keyframes[j]['pose']
                 dist = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -153,7 +153,6 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         loop_count = len(loop_closures)
         print(f"  Hurokzárások száma: {loop_count} db")
         
-        # Gráf optimizálás: hiba visszaszétosztása
         for i, j, ex, ey, eyaw in loop_closures:
             span = j - i
             for k_idx in range(i, j + 1):
@@ -162,7 +161,6 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
                 keyframes[k_idx]['pose'][1] += weight * ey
                 keyframes[k_idx]['pose'][2] = wrap_angle(keyframes[k_idx]['pose'][2] + weight * eyaw)
 
-    # Korrigált SLAM trajectory és 5cm Voxelek előállítása
     slam_trajectory = []
     voxel_grid = {}
     points_tagged = []
@@ -187,7 +185,6 @@ def process_etalon_slam(filepath, name, label, is_stationary=False, step=2, max_
         cy, sy = math.cos(p[2]), math.sin(p[2])
         rot_w = np.array([[cy, -sy], [sy, cy]], dtype=np.float32)
         
-        # Pontfelhő
         sensor_pts = kf['pts_all']
         pts_w_xy = sensor_pts[:, :2] @ rot_w.T + p[:2]
         pts_w_3d = np.column_stack([pts_w_xy, sensor_pts[:, 2]])
@@ -312,8 +309,8 @@ def generate_etalon_html(datasets):
 <body>
   <div id="canvas3d"></div>
   <div id="hud-panel">
-    <h1>🔗 Loop Closure Graph 3D SLAM</h1>
-    <p style="font-size:10px; color:var(--muted);">Gráf Hurokzárás & Tűéles 5 cm Fal Voxelek</p>
+    <h1>🔗 Zero-Offset Loop Closure Graph SLAM</h1>
+    <p style="font-size:10px; color:var(--muted);">Pontos Tengely-Illesztés & Tűéles 5 cm Fal Voxelek</p>
 
     <div>
       <label style="font-size:10px; color:var(--muted); display:block; margin-bottom:3px;">ADATHALMAZ:</label>
@@ -326,7 +323,7 @@ def generate_etalon_html(datasets):
 
     <div class="card">
       <div class="toggle-row">
-        <span>🔴 Nyers Driftelő Odometria Megjelenítése:</span>
+        <span>🔴 Nyers Odometria Útvonal:</span>
         <label class="switch">
           <input type="checkbox" id="chk-raw-traj" checked onchange="updateVisibility()">
           <span class="slider"></span>
@@ -349,8 +346,8 @@ def generate_etalon_html(datasets):
     </div>
 
     <div class="card" style="border-left: 3px solid var(--accent-green);">
-      <b>🔗 A Gráf Hurokzárás Működése:</b><br>
-      Amikor a robot visszaér egy korábban bejárt helyre, az algoritmus <b>automatikusan bezárja a hurkot (Loop Closure)</b>, és visszamenőleg kiegyenlíti a falak eltolódását!
+      <b>🌐 A Pontos SLAM Működése:</b><br>
+      Megszüntettük a téves 90°-os tengely-eltolást. Amikor a robot körbemegy a szobában, a hurokzárás automatikusan **egybeolvasztja a falakat**, megszüntetve a sávos duplikációt!
     </div>
 
     <div id="ds-info" class="card">
