@@ -18,7 +18,10 @@ expects from `core`, plus raw point-cloud endpoints for the 3D viewer.
 Upstreams (all already running on the dock):
     :5001  webrtc_bridge   /state /camera.jpg /lidar /lidar_state
     :5003  hesai_bridge    /lidar /health
-    :9091  realsense_bridge (currently faulted -- known USB issue)
+    :9091  realsense_bridge -- NOT http: a rosbridge WebSocket. The colour
+           and depth streams publish sensor_msgs/CompressedImage at 15 Hz,
+           which is already JPEG/PNG on the wire, so we subscribe once and
+           re-serve the newest frame over plain HTTP.
 """
 import base64
 import os
@@ -31,7 +34,8 @@ from flask import Flask, Response, jsonify, request
 
 GO2 = os.environ.get("GO2_BRIDGE_URL", "http://127.0.0.1:5001")
 HESAI = os.environ.get("HESAI_BRIDGE_URL", "http://127.0.0.1:5003")
-REALSENSE = os.environ.get("REALSENSE_URL", "http://127.0.0.1:9091")
+REALSENSE_WS_HOST = os.environ.get("REALSENSE_WS_HOST", "127.0.0.1")
+REALSENSE_WS_PORT = int(os.environ.get("REALSENSE_WS_PORT", "9091"))
 PORT = int(os.environ.get("HUB_PORT", "9101"))
 
 STATE_TTL = float(os.environ.get("STATE_TTL_S", "0.12"))
@@ -40,6 +44,75 @@ LINK_MAX_AGE_S = float(os.environ.get("LINK_MAX_AGE_S", "2.0"))
 
 app = Flask(__name__)
 _t0 = time.time()
+
+
+# ---------------------------------------------------------------------------
+# RealSense over rosbridge
+# ---------------------------------------------------------------------------
+
+class RosImageTap:
+    """Holds the latest frame of one CompressedImage topic.
+
+    Subscribing once and sharing the result matters here: every extra
+    rosbridge subscription costs bandwidth on the dock, and the browser may
+    open several viewers of the same stream.
+    """
+
+    def __init__(self, topic):
+        self.topic = topic
+        self.lock = threading.Lock()
+        self.frame = None
+        self.t = 0.0
+        self.error = "nem indult el"
+        self.count = 0
+        threading.Thread(target=self._run, daemon=True,
+                         name=f"ros-{topic.split('/')[2]}").start()
+
+    def _run(self):
+        backoff = 2.0
+        while True:
+            try:
+                import roslibpy
+                client = roslibpy.Ros(host=REALSENSE_WS_HOST, port=REALSENSE_WS_PORT)
+                client.run(timeout=10)
+                sub = roslibpy.Topic(client, self.topic, "sensor_msgs/CompressedImage",
+                                     queue_length=1, throttle_rate=100)
+                sub.subscribe(self._on_msg)
+                self.error = None
+                backoff = 2.0
+                while client.is_connected:
+                    time.sleep(1.0)
+                self.error = "rosbridge kapcsolat megszakadt"
+            except Exception as exc:
+                self.error = str(exc)[:160]
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    def _on_msg(self, msg):
+        try:
+            data = base64.b64decode(msg["data"])
+        except Exception:
+            return
+        with self.lock:
+            self.frame = data
+            self.t = time.time()
+            self.count += 1
+
+    def get(self):
+        with self.lock:
+            return self.frame, self.t, self.error
+
+    def age(self):
+        return (time.time() - self.t) if self.t else float("inf")
+
+
+REALSENSE_TOPICS = {
+    "rs_color": "/camera/color/image_raw/compressed",
+    "rs_depth": "/camera/depth/image_rect_raw/compressed",
+}
+taps = {}
+if os.environ.get("ENABLE_REALSENSE", "1") == "1":
+    taps = {k: RosImageTap(v) for k, v in REALSENSE_TOPICS.items()}
 
 
 class Cached:
@@ -159,7 +232,11 @@ def state():
             "go2_camera": state_c.error is None,
             "go2_lidar": go2_lidar_c.error is None,
             "hesai": hesai_c.error is None,
+            **{k: (t.error is None and t.age() < 5) for k, t in taps.items()},
         },
+        "realsense": {k: {"frames": t.count, "age_s": (None if t.age() == float("inf")
+                                                        else round(t.age(), 2)),
+                           "error": t.error} for k, t in taps.items()},
         "watchdog_trips": 0,
         "t": time.time(),
     })
@@ -199,6 +276,29 @@ def camera_frame():
         return jsonify({"error": str(exc)}), 503
     return jsonify({"cam_id": request.args.get("cam_id", "front"),
                     "jpeg_b64": base64.b64encode(r.content).decode("ascii")})
+
+
+@app.route("/camera/<name>.jpg")
+def camera_named(name):
+    tap = taps.get(name)
+    if tap is None:
+        return jsonify({"error": f"unknown camera {name}"}), 404
+    frame, _t, err = tap.get()
+    if frame is None:
+        return jsonify({"error": err or "még nincs képkocka"}), 503
+    return Response(frame, mimetype="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.route("/cameras")
+def cameras():
+    out = [{"cam_id": "front", "label": "Go2 orr-kamera", "source": "webrtc",
+            "available": state_c.error is None}]
+    labels = {"rs_color": "RealSense szín", "rs_depth": "RealSense mélység"}
+    for k, tap in taps.items():
+        out.append({"cam_id": k, "label": labels.get(k, k), "source": "realsense",
+                    "available": tap.get()[0] is not None and tap.age() < 5})
+    return jsonify(out)
 
 
 @app.route("/camera.jpg")
