@@ -25,6 +25,7 @@ Upstreams (all already running on the dock):
 """
 import base64
 import os
+import struct
 import threading
 import time
 
@@ -265,6 +266,48 @@ def lidar_raw(source):
     return jsonify({"source": source, "points": out,
                     "count": len(out), "raw_count": raw_n,
                     "error": c.error, "t": time.time()})
+
+
+# Binary point cloud, for the PC-side KISS-ICP SLAM.
+#
+# The JSON form of one Hesai frame is ~1.2 MB and takes ~190 ms to move off
+# the dock, which caps the SLAM at ~2 Hz. The same points as packed float32
+# are ~216 kB, and neither side has to parse a number. Route deliberately
+# does not live under /lidar/<source>, so it can never shadow it.
+
+_bin_cache = {"t": 0.0, "key": None, "buf": b""}
+_bin_lock = threading.Lock()
+
+
+@app.route("/lidar_bin/<source>")
+def lidar_bin(source):
+    """magic 'PC3D' + uint32 point count + count * 3 * float32 little-endian."""
+    if source == "go2":
+        pts = go2_lidar_c.get() or []
+    elif source == "hesai":
+        pts = hesai_c.get() or []
+    else:
+        return jsonify({"error": f"unknown source {source}"}), 404
+    limit = int(request.args.get("max", 0))
+
+    key = (source, len(pts), limit)
+    with _bin_lock:
+        if _bin_cache["key"] == key and (time.time() - _bin_cache["t"]) < LIDAR_TTL:
+            buf = _bin_cache["buf"]
+        else:
+            arr = np.asarray(pts, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] == 0:
+                arr = np.zeros((0, 3), dtype=np.float32)
+            else:
+                arr = arr[:, :3]
+                if limit and arr.shape[0] > limit:
+                    idx = np.linspace(0, arr.shape[0] - 1, limit).astype(np.int32)
+                    arr = arr[idx]
+            arr = np.ascontiguousarray(arr, dtype="<f4")
+            buf = b"PC3D" + struct.pack("<I", arr.shape[0]) + arr.tobytes()
+            _bin_cache.update(t=time.time(), key=key, buf=buf)
+    return Response(buf, mimetype="application/octet-stream",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.route("/camera_frame")
