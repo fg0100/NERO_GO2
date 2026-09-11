@@ -350,6 +350,11 @@ def nav_status():
     return svc.status()
 
 
+@app.get("/health")
+def health():
+    return {"ok": True, "pillar": PILLAR, "state": svc.state}
+
+
 if os.environ.get("MC_ENABLE_DEBUG_ENDPOINTS") == "1":
     # Only mounted when explicitly enabled. These bypass core's shared
     # arm state entirely, so leaving them always-on means anyone who can
