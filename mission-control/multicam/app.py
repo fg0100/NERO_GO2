@@ -10,6 +10,7 @@ Endpoints:
     GET  /cameras/{cam_id}/stream         -- MJPEG live stream
     POST /cameras/{cam_id}/record/start   -- start continuous frame-saving
     POST /cameras/{cam_id}/record/stop    -- stop it
+    GET  /cameras/{cam_id}/detections     -- one-shot YOLOv8 detection (JSON)
     GET  /                                -- HTML page with <img> tags per camera
 
 Talks to the robot only through `core/robot_client.py`, per CONVENTIONS.md.
@@ -28,7 +29,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 import uvicorn
 
-from camera_source import CameraSource, RobotClientCameraSource, discover_usb_cameras
+from camera_source import (
+    CameraSource,
+    RobotClientCameraSource,
+    YoloUnavailableError,
+    discover_usb_cameras,
+    get_yolo_detector,
+)
 
 PILLAR = "multicam"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +44,8 @@ LOGS_DIR = os.path.join(BASE_DIR, "logs")
 LOG_PATH = os.path.join(LOGS_DIR, "events.jsonl")
 RECORD_FPS = float(os.environ.get("RECORD_FPS", "2"))
 MJPEG_BOUNDARY = "mjpegboundary"
+YOLO_WEIGHTS = os.environ.get("YOLO_WEIGHTS", "yolov8n.pt")
+YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.4"))
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -238,6 +247,33 @@ def record_stop(cam_id: str):
     frame_count = session.stop()
     log_event("info", "recording stopped", cam_id=cam_id, out_dir=session.out_dir, frame_count=frame_count)
     return {"cam_id": cam_id, "recording": False, "out_dir": session.out_dir, "frame_count": frame_count}
+
+
+# ---------------------------------------------------------------------------
+# GET /cameras/{cam_id}/detections  (YOLOv8, one-shot on current frame)
+# ---------------------------------------------------------------------------
+
+@app.get("/cameras/{cam_id}/detections")
+def get_detections(cam_id: str):
+    cam = get_camera(cam_id)
+    try:
+        jpeg = cam.grab_jpeg()
+    except Exception as exc:
+        log_event("error", "frame grab failed for detection", cam_id=cam_id, error=str(exc))
+        raise HTTPException(status_code=503, detail=f"camera {cam_id} unavailable: {exc}") from exc
+
+    detector = get_yolo_detector(weights=YOLO_WEIGHTS, conf_threshold=YOLO_CONF)
+    try:
+        result = detector.detect_jpeg(jpeg)
+    except YoloUnavailableError as exc:
+        log_event("error", "YOLO unavailable", cam_id=cam_id, error=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        log_event("error", "YOLO detection failed", cam_id=cam_id, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"detection failed: {exc}") from exc
+
+    log_event("info", "detections served", cam_id=cam_id, count=result["count"], elapsed_ms=result["elapsed_ms"])
+    return {"cam_id": cam_id, **result}
 
 
 # ---------------------------------------------------------------------------

@@ -164,6 +164,61 @@ class RobotClientCameraSource(CameraSource):
         return frame
 
 
+class YoloUnavailableError(RuntimeError):
+    """Raised when ultralytics isn't installed or model load failed."""
+
+
+class YoloDetector:
+    """Lazy-loaded, cached YOLOv8 detector shared across all cameras.
+
+    Wraps `yolo_detector.detect()`. Decodes JPEG bytes (as returned by
+    `CameraSource.grab_jpeg()`) to a numpy BGR frame via cv2 before
+    handing it to ultralytics -- keeps the JSON contract identical to the
+    sibling-clone prototype (`docker/realsense_bridge/yolo_detector.py`).
+    """
+
+    def __init__(self, weights: str, conf_threshold: float):
+        self.weights = weights
+        self.conf_threshold = conf_threshold
+        self._lock = threading.Lock()
+        self._load_error: Optional[str] = None
+
+    def _ensure_loaded(self):
+        import yolo_detector
+
+        with self._lock:
+            try:
+                return yolo_detector.load_model(self.weights)
+            except Exception as exc:
+                self._load_error = str(exc)
+                raise YoloUnavailableError(f"YOLO model load failed: {exc}") from exc
+
+    def detect_jpeg(self, jpeg: bytes) -> dict:
+        import cv2
+        import numpy as np
+        import yolo_detector
+
+        self._ensure_loaded()
+        frame = cv2.imdecode(np.frombuffer(jpeg, dtype="uint8"), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise RuntimeError("failed to decode JPEG frame for YOLO detection")
+        with self._lock:
+            return yolo_detector.detect(frame, weights=self.weights, conf_threshold=self.conf_threshold)
+
+
+_yolo_detector: Optional[YoloDetector] = None
+_yolo_detector_lock = threading.Lock()
+
+
+def get_yolo_detector(weights: str, conf_threshold: float) -> YoloDetector:
+    global _yolo_detector
+    if _yolo_detector is None:
+        with _yolo_detector_lock:
+            if _yolo_detector is None:
+                _yolo_detector = YoloDetector(weights=weights, conf_threshold=conf_threshold)
+    return _yolo_detector
+
+
 def discover_usb_cameras(max_probe: int = 8) -> list[UsbCameraSource]:
     """Discover local USB cameras.
 
