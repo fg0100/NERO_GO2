@@ -13,6 +13,7 @@
     --accent:#5fc3d6; --warm:#e0a05c; --good:#6bc98a; --bad:#e06a6a;
   }
   * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
   body {
     margin:0; background:var(--bg); color:var(--text);
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
@@ -32,6 +33,13 @@
   }
   .panel { background:var(--card); display:flex; flex-direction:column; min-height:340px; }
   .panel.big { grid-column: span 2; min-height: 520px; }
+  .demo-pair { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px; background:var(--border); }
+  .demo-pair .panel { min-width:0; min-height:430px; }
+  .map-body { background:#10161c; }
+  #mapCanvas { max-width:100%; max-height:100%; width:auto; height:auto; image-rendering:pixelated; }
+  .map-placeholder { max-width:32rem; padding:1rem; color:var(--muted); font-size:0.8rem; line-height:1.5; text-align:center; }
+  .map-meta { padding:0.4rem 0.8rem; color:var(--muted); font-size:0.7rem; border-top:1px solid var(--border); }
+  @media (max-width:760px) { .demo-pair { grid-template-columns:1fr; } .panel.big { grid-column:1 / -1; } }
   .panel-head {
     display:flex; justify-content:space-between; align-items:center;
     padding:0.5rem 0.8rem; border-bottom:1px solid var(--border);
@@ -82,9 +90,19 @@
     <div class="panel-body"><img id="rgbImg" src=""></div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><span>C70 kamera (kar)</span><span class="pill">/usb_cam/image_raw</span></div>
-    <div class="panel-body"><img id="c70Img" src=""></div>
+  <div class="demo-pair">
+    <div class="panel">
+      <div class="panel-head"><span>C70 kamera (kar)</span><span class="pill">/usb_cam/image_raw</span></div>
+      <div class="panel-body"><img id="c70Img" src="" alt="A kar C70 kamerájának képe"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>Épülő 2D térkép</span><span class="pill">/map · SLAM</span></div>
+      <div class="panel-body map-body">
+        <canvas id="mapCanvas" aria-label="A 2D LiDAR által épített foglaltsági térkép" hidden></canvas>
+        <span id="mapPlaceholder" class="map-placeholder">Várakozás a /map adatra. A nyers /scan felülnézet nem térkép; ehhez futó SLAM szükséges.</span>
+      </div>
+      <div class="map-meta" id="mapStatus" role="status">Térkép: várakozás</div>
+    </div>
   </div>
 
   <div class="panel">
@@ -148,6 +166,68 @@ const statusEl = document.getElementById('globalStatus');
 ros.on('connection', () => { statusEl.textContent = "rosbridge: csatlakozva"; statusEl.className = "ok"; });
 ros.on('error', (e) => { statusEl.textContent = "rosbridge hiba"; statusEl.className = "err"; });
 ros.on('close', () => { statusEl.textContent = "rosbridge: lezárva"; statusEl.className = "err"; });
+
+// A SLAM által előállított foglaltsági rács; a /scan önmagában nem térkép.
+const mapTopic = new ROSLIB.Topic({
+  ros, name: '/map', messageType: 'nav_msgs/OccupancyGrid',
+  throttle_rate: 500, queue_length: 1
+});
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
+const mapStatus = document.getElementById('mapStatus');
+const mapPlaceholder = document.getElementById('mapPlaceholder');
+let lastMapArrival = 0;
+let mapUpdates = 0;
+let lastMapHash = null;
+
+function mapCells(data) {
+  if (Array.isArray(data)) return data;
+  if (typeof data !== 'string') return null;
+  const binary = atob(data);
+  const cells = new Int8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) cells[i] = binary.charCodeAt(i);
+  return cells;
+}
+
+function drawMap(msg) {
+  const w = msg.info?.width, h = msg.info?.height;
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > 10000000) return;
+  let cells;
+  try { cells = mapCells(msg.data); } catch (err) { console.warn('Térkép dekódolási hiba', err); return; }
+  if (!cells || cells.length < w * h || !Number.isFinite(msg.info?.resolution)) return;
+  if (mapCanvas.width !== w) mapCanvas.width = w;
+  if (mapCanvas.height !== h) mapCanvas.height = h;
+  const image = mapCtx.createImageData(w, h);
+  let hash = 2166136261;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const value = cells[y * w + x];
+      hash = Math.imul(hash ^ (value + 1), 16777619) >>> 0;
+      const pixel = ((h - y - 1) * w + x) * 4;
+      const shade = value < 0 ? 67 : Math.round(239 - Math.max(0, Math.min(100, value)) * 2.04);
+      image.data[pixel] = shade;
+      image.data[pixel + 1] = shade;
+      image.data[pixel + 2] = shade;
+      image.data[pixel + 3] = 255;
+    }
+  }
+  mapCtx.putImageData(image, 0, 0);
+  mapCanvas.hidden = false;
+  mapPlaceholder.hidden = true;
+  lastMapArrival = Date.now();
+  mapUpdates++;
+  const changed = lastMapHash !== null && hash !== lastMapHash;
+  lastMapHash = hash;
+  const frame = msg.header?.frame_id || 'ismeretlen frame';
+  const state = changed ? 'Térkép: tartalom változott' : mapUpdates > 1 ? 'Térkép: üzenetek érkeznek, tartalom változatlan' : 'Térkép: fogadva, frissítésre vár';
+  mapStatus.textContent = `${state} · ${w}×${h} · ${msg.info.resolution.toFixed(3)} m/cella · ${frame}`;
+}
+mapTopic.subscribe(drawMap);
+setInterval(() => {
+  if (!ros.isConnected) { mapStatus.textContent = 'Térkép: nincs ROS-kapcsolat'; return; }
+  if (!lastMapArrival) { mapStatus.textContent = 'Térkép: nincs /map üzenet'; return; }
+  if (Date.now() - lastMapArrival > 15000) mapStatus.textContent = 'Térkép: nem frissül (15+ mp) · ellenőrizd a SLAM-et és a TF-et';
+}, 3000);
 
 // rosbridge base64 uint8[] payloadokat ad vissza string formában -> ezt Uint8Array-re kell bontani
 function base64ToBytes(b64) {

@@ -99,7 +99,7 @@
   .log .mock { color:var(--muted); }
   .log .sim { color:var(--warm); }
 
-  .camera-embed { border:0; width:100%; height:420px; background:var(--bg); }
+  .camera-embed { border:0; width:100%; height:1050px; background:var(--bg); }
   .embed-note { font-size:0.72rem; color:var(--faint); padding:0.4rem 0.8rem; }
 </style>
 </head>
@@ -163,8 +163,8 @@
     <div class="panel-body">
       <div class="readout" style="margin-top:0; margin-bottom:1rem; color:var(--warm);">
         A 4 csúszka és a gripper-gombok csak a naplóba írnak. Nincs bekötve semmilyen valós
-        ROS topic/action — a <code>mini_mec_four_arm_moveit_config</code> ízület-határai és
-        topic-nevei nincsenek leolvasva a robotról (lásd docs/08-kezi-vezerles.md).
+        ROS-parancs. A <code>/arm_cmd</code> és a j1/j2/j3 ±45° határa ismert, de a gripper
+        konvenciója és a kar biztonságos mozgása még nincs kalibrálva (lásd docs/08-kezi-vezerles.md).
       </div>
 
       <div class="slider-row"><label>j1_joint</label><input type="range" id="j0" min="-45" max="45" value="0"><span class="val" id="j0v">0°</span></div>
@@ -179,7 +179,7 @@
   </div>
 
   <div class="panel wide">
-    <div class="panel-head"><span>Kamerák + LiDAR + 3D point cloud (meglévő irányítópult beágyazva)</span></div>
+    <div class="panel-head"><span>C70 kamera + épülő 2D térkép + további szenzorok (meglévő irányítópult beágyazva)</span></div>
     <div class="embed-note">A <code>dashboard.html</code> ugyanaz a fájl, amit ez a panel élőben megjelenít — nincs duplikálva. Ha a beágyazott iframe üresen marad, nyisd meg külön fülön a fenti linkkel.</div>
     <iframe class="camera-embed" src="dashboard.html"></iframe>
   </div>
@@ -204,10 +204,7 @@ ros.on('connection', () => { statusEl.textContent = "rosbridge: csatlakozva"; st
 ros.on('error', () => { statusEl.textContent = "rosbridge hiba (offline/mock móddal is használható a napló)"; statusEl.className = "err"; });
 ros.on('close', () => { statusEl.textContent = "rosbridge: lezárva"; statusEl.className = "err"; });
 
-// UNVERIFIED ezen a konkrét roboton ebben a sessionben: a topic létezését
-// és típusát `rostopic info /cmd_vel`-lel kell megerősíteni élő teszt előtt
-// (lásd docs/08-kezi-vezerles.md). Ez a Wheeltec `turn_on_wheeltec_robot`
-// gyári konvenciója, nem ezen az egy robotpéldányon mért tény.
+// A /cmd_vel geometry_msgs/Twist típust 2026-09-18-án élőben megerősítették.
 const cmdVelTopic = new ROSLIB.Topic({
   ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist'
 });
@@ -376,11 +373,11 @@ log('mock', "vezérlőpult betöltve — bázis: nincs élesítve, kar: mindig s
   const val = document.getElementById(id + 'v');
   slider.addEventListener('input', () => {
     val.textContent = slider.value + "°";
-    log('sim', `SZIMULÁCIÓ — ${id} kért szög: ${slider.value}° (nincs valós topic, csak napló)`);
+    log('sim', `SZIMULÁCIÓ — ${id} kért szög: ${slider.value}° (nincs valós küldés, csak napló)`);
   });
 });
-document.getElementById('gripOpen').addEventListener('click', () => log('sim', "SZIMULÁCIÓ — gripper NYIT parancs (nincs valós topic, csak napló)"));
-document.getElementById('gripClose').addEventListener('click', () => log('sim', "SZIMULÁCIÓ — gripper ZÁR parancs (nincs valós topic, csak napló)"));
+document.getElementById('gripOpen').addEventListener('click', () => log('sim', "SZIMULÁCIÓ — gripper NYIT parancs (nincs valós küldés, csak napló)"));
+document.getElementById('gripClose').addEventListener('click', () => log('sim', "SZIMULÁCIÓ — gripper ZÁR parancs (nincs valós küldés, csak napló)"));
 </script>
 </body>
 </html>

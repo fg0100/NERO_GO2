@@ -8,6 +8,8 @@ scripts\connect.ps1
 
 Kulcsos, jelszó nélküli SSH-t használ. Sudo-hoz kell a jelszó: `dongguan`.
 
+**2026-09-18, jelenlegi Codex-gép:** a korábban dokumentált `~/.ssh/pickerbot_mini` kulcs ezen a Windows gépen nem volt elérhető. A tulajdonos kérésére új ED25519 kulcs készült a `C:\Users\david\Documents\Codex\pickerbot-access\pickerbot_mini` helyen; a publikus kulcsot a `wheeltec` felhasználó `~/.ssh/authorized_keys` fájljához fűztük, a meglévő sorokat megtartva. A hostkulcs ujjlenyomata: `SHA256:Zeb1VsTQD2oPrjjh8ncG6O2j3/HQE8T3wTMNHBDK6vU`. A helyi `connect.ps1` segéd ezt a kulcsot és a hozzá tartozó `known_hosts` fájlt használja; a `-Command 'hostname'` próba és későbbi parancsfuttatás jelszó nélkül sikerült. A privát kulcs **nincs a Git repóban**; ne másold vagy küldd tovább.
+
 Ha a szkript nélkül, kézzel akarsz belépni:
 
 ```bash

@@ -34,7 +34,7 @@ A router WAN (kék) portja **nincs használva** — AP módban a router csak swi
 | `192.168.123.2` | TP-Link TL-WR940N (admin felület) | fix |
 | `192.168.123.18` | Go2 — fedélzeti Jetson (SSH 22, web 80, `mc_sensor_hub` 9101) | fix, gyári |
 | `192.168.123.20` | Go2 — Hesai LiDAR ("Pandar Console" web a 80-as porton) | fix, gyári |
-| `192.168.123.50` | Xavier Pickerbot Mini — `eth0` | fix |
+| `192.168.123.50` | Xavier Pickerbot Mini — jelenleg USB-LAN adapter (`eth0` volt a 2026-09-18-i incidens után; aktuális interfészt ellenőrizni kell) | fix |
 | `192.168.123.99` | fejlesztő laptop Ethernet (kézi, ha kábellel jössz) | fix |
 | `192.168.123.100`–`.149` | Wi-Fi / kábeles kliensek | DHCP a routertől |
 
@@ -94,6 +94,8 @@ ssh -i ~/.ssh/id_ed25519_neonpc "gaming pc@10.1.18.255"
 | Wireless Security | WPA2, jelszó `12345678` |
 
 ## A Pickerbot hálózati beállítása
+
+**Frissítés a 2026-09-18-i fizikai incidens után:** a beépített LAN-port megsérült. Az USB-LAN adapter átvette az `eth0` nevet, a régi port `eth1` és `NO-CARRIER` volt a dokumentált méréskor. Az alábbi táblázat a korábbi beállítás pillanatképe; új csatlakozás után `ip -br addr` és `ip -br link` kimenettel ellenőrizd, hogy az aktív adapteren van-e a `.50` cím.
 
 A Pickerbotnak két hálózati interfésze van, NetworkManager kezeli:
 

@@ -14,7 +14,8 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 - [docs/05-sajat-projekt-iranyitopult.md](docs/05-sajat-projekt-iranyitopult.md) — **saját projekt #1**: élő webes irányítópult (kamerák + LiDAR + 3D point cloud)
 - [docs/06-sajat-projekt-akademia.md](docs/06-sajat-projekt-akademia.md) — **saját projekt #2**: Pickerbot Akadémia — oktatási robotika-platform terve + autonóm generáló pipeline
 - [docs/07-ismert-hibak.md](docs/07-ismert-hibak.md) — hibajelenség → ok → javítás táblázat, drágán megszerzett tudás
-- [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) — **saját projekt #3**: kézi vezérlés (bázis-drive valós-képes ÉLESÍTÉS mögött, kar MOCK-ONLY) — 🔴 élő teszt előtt olvasd el, `/cmd_vel` nincs megerősítve ezen a robotpéldányon
+- [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) — **saját projekt #3**: kézi vezérlés (bázis-drive valós-képes ÉLESÍTÉS mögött, kar MOCK-ONLY); a `/cmd_vel` 2026-09-18-án élőben megerősítve
+- [docs/10-bemutato-terkep.md](docs/10-bemutato-terkep.md) — a C70 kamera + valódi `/map` bemutató állapota és ellenőrzési sorrendje
 - [docs/09-robot-halozat.md](docs/09-robot-halozat.md) — **a közös robot-hálózat** (2026-09-18): gateway PC + TP-Link router, IP-kiosztás, elérés, hibaelhárítás
 - [scripts/](scripts/) — a ténylegesen használt kapcsolódó/indító szkriptek, másolható egy az egyben
 - [inventory.html](inventory.html) — vizuális szoftver-/tárhely-leltár a robot lemezéről
@@ -44,6 +45,10 @@ Roboton futó systemd service-ek (`sudo systemctl status <név>` az ellenőrzés
 - `pickerbot-webui` — a `pickerbot_web_ui/` mappát szolgálja ki 8901-en (`control_panel.html`, `dashboard.html`)
 
 Mindhárom `enable`-ölve van, `Restart=on-failure`-ral — összeomlás után maguktól újraindulnak.
+
+**2026-09-18 korábbi, helyreállítás előtti mérés:** a 8901-es vezérlőpult és a 9090-es rosbridge elérhető volt, de a `/PowerVoltage` nem adott értéket, és a `/scan`, `/usb_cam/image_raw`, `/map` témáknak nem volt publikálója. A 8080-as kamera-stream port sem válaszolt. Az új webes térképpanel a `/map` hiányát jelzi; nem rajzol a nyers `/scan`-ből ál-térképet.
+
+**2026-09-18, reboot után is ellenőrzött helyreállítás:** az árva bringup és a systemd-példány ütközése megszűnt, a szolgáltatás a helyes `mini_mec_moveit_four` modellt használja. Az első rebootpróba egy további indulási versenyt fedett fel: a rosbridge saját ROS mastert próbált indítani, mielőtt a bringup mastere elkészült. A rosbridge most megvárja a `/run_id` paramétert. A második reboot után pontosan egy bringup fut, a `/wheeltec_robot` válaszol, az odometria és az IMU friss, a feszültség 23,33 V körüli. Mindhárom `pickerbot-*` szolgáltatás aktív és engedélyezett. A kamera, a LiDAR és a `/map` még nem fut, és a helyi weboldal-módosítások nincsenek a roboton. A két konfigurációs fájl a [systemd/](systemd/) mappában, részletek: [docs/10-bemutato-terkep.md](docs/10-bemutato-terkep.md).
 
 ## ⚠️ Mielőtt hozzányúlnál
 

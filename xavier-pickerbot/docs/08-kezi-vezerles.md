@@ -1,5 +1,7 @@
 # Saját projekt #3 — kézi vezérlés (bázis + kar)
 
+**Friss állapot 2026-09-18, két rebootpróba után:** a duplán indult bringup, a hibás `senior_mec_bs` mód és a rosbridge/master indulási versenye rendezve. Egy `mini_mec_moveit_four` bringup fut; a `/wheeltec_robot` válaszol, `/odom`, `/imu` és `/PowerVoltage` friss. A feszültség 23,33 V körüli volt. A lentebb olvasható sikeres `/cmd_vel` és `/arm_cmd` mozgáspróbák **korábbi állapotra** vonatkoznak; a mostani helyreállítás során nem küldtünk mozgásparancsot. A régi `start_feeds.sh` szkriptet ne indítsd a systemd-szolgáltatások mellé. Részletek: [10-bemutato-terkep.md](10-bemutato-terkep.md).
+
 **Építve: 2026-09-18, robot offline (SSH nem elérhető) — semmi ebből nem lett élő roboton tesztelve.** Célja: a meglévő, csak-megfigyelő [05-sajat-projekt-iranyitopult.md](05-sajat-projekt-iranyitopult.md) irányítópult kiegészítése tényleges bázis- és kar-vezérléssel, ugyanazzal a biztonsági doktrínával, mint amit a testvér-repóban ([NERO_GO2](../) fő projekt, Go2 négylábú) a `docker/web_dashboard/joint_safety.py` + `lowcmd_sender.py` mock/real-split párra építettünk.
 
 **FONTOS:** ez a robot **nem** a Go2 négylábú. Mecanum-alváz + 4 DOF kar, ROS1 Noetic (nem DDS/LowCmd). A Go2 ízület-számokat, sebesség-plafonokat sehol nem vettük át — minden itt szereplő szám ezen a roboton, ehhez a hajtáshoz lett (óvatosan) kitalálva, vagy explicit PLACEHOLDER-ként jelölve.

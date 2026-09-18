@@ -1,6 +1,6 @@
 # Saját projekt #1 — élő webes irányítópult
 
-**Fut, tesztelve 2026-08-25-én.** Egyetlen oldal, minden élő szenzor-feed egy helyen, böngészőből: [scripts/dashboard.html](../scripts/dashboard.html).
+**2026-08-25-én szenzorokkal tesztelve.** A [scripts/control_panel.html](../scripts/control_panel.html) beágyazza a [scripts/dashboard.html](../scripts/dashboard.html) oldalt. A 2026-09-18-i friss hálózati mérésen a weboldal elérhető volt, de a kamera, LiDAR és SLAM publikálói hiányoztak; lásd [10-bemutato-terkep.md](10-bemutato-terkep.md).
 
 ## Mit tud
 
@@ -10,8 +10,11 @@
 - **Kamera mód kapcsolók** (RGB/Depth be-ki) élő `std_srvs/SetBool` hívásokkal, relaunch nélkül a lapról.
 - **Depth kép saját canvas-renderelése** — a `web_video_server` nem tudja a 16UC1 nyers mélységformátumot automatikusan színes képpé konvertálni (`cv_bridge` hiba: `[16UC1] is not a color format`), ezért ezt a lap saját JavaScript-je csinálja.
 - **3D point cloud + LiDAR overlay**, Three.js + OrbitControls (kattints+húzd forgatáshoz, görgő zoomhoz) — `/camera/depth/points`-ból (kék), a LiDAR `/scan` ugyanabba a 3D térbe vetítve (narancssárga).
+- **Valódi 2D SLAM-térkép panel** a C70 kép mellett: `/map` (`nav_msgs/OccupancyGrid`) foglaltsági rács, frissülési állapottal. Csak akkor mutat térképet, ha ROS-oldalon tényleges `/map` üzenet érkezik; roboton még nem teszteltük.
 
-## Indítás
+## Korábbi kézi indítás (2026-08-25)
+
+Az alábbi eljárás a régi, külön szenzorindítás dokumentációja. A 2026-09-18 óta dokumentált automatikus systemd-szolgáltatások mellett a `start_feeds.sh`-t ne futtasd ellenőrzés nélkül, mert folyamatokat duplázhat. Az aktuális bemutató ellenőrzési sorrendje a [10-bemutato-terkep.md](10-bemutato-terkep.md) fájlban van.
 
 ```bash
 # a roboton, SSH-n át:

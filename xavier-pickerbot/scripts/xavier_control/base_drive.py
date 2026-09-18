@@ -9,15 +9,10 @@ angular.z. Mecanum wheels (unlike a differential-drive base) genuinely
 support lateral motion, so linear.y is a real, independent control axis
 here, not just left over from a generic Twist template.
 
-Topic name (UNVERIFIED on this specific robot instance): `/cmd_vel` is the
-conventional topic for Wheeltec's own `turn_on_wheeltec_robot` base driver
-and is what their `wheeltec_joy_control` package publishes to. It is a
-reasonable, well-documented default, but nobody has run
-`rostopic info /cmd_vel` against THIS robot this session (it was
-unreachable) to confirm the topic exists, its exact message type, or that
-nothing else on the robot expects a different name. Treat it as "very
-likely correct, not yet confirmed" — see docs/08-kezi-vezerles.md for the
-live-verification procedure to run before the first real send.
+Topic name: `/cmd_vel`, `geometry_msgs/Twist`, verified on this robot on
+2026-09-18 with `/wheeltec_robot` as subscriber. The current connection
+and physical motion still need checking before each supervised run; see
+docs/08-kezi-vezerles.md.
 
 SPEED CAPS BELOW ARE SAFETY-FIRST DEFAULTS, NOT MEASURED HARDWARE CEILINGS.
 No load test, tape-measure timing run, or datasheet lookup has been done
