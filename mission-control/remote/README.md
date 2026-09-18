@@ -51,12 +51,12 @@ repo. Two options:
 
 ```bash
 # option A: shell env var before `docker compose up`
-export TS_AUTHKEY=tskey-auth-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export TS_AUTHKEY=<IDE-JON-A-SAJAT-KULCSOD>
 
 # option B: a .env file next to docker-compose.yml (make sure it's
 # gitignored -- check the repo's top-level .gitignore before relying on
 # this)
-echo "TS_AUTHKEY=tskey-auth-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >> .env
+echo "TS_AUTHKEY=<IDE-JON-A-SAJAT-KULCSOD>" >> .env
 ```
 
 With `TS_AUTHKEY` unset, the fragment's `${TS_AUTHKEY:-}` resolves to an
