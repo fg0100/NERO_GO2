@@ -131,6 +131,11 @@ def health():
                         "sdk_error": _sdk_error, "armed": _armed,
                         "limits": {"max_vx": MAX_VX, "max_vy": MAX_VY, "max_vyaw": MAX_VYAW},
                         "command_timeout_s": COMMAND_TIMEOUT_S,
+                        # The console polls /health, so the arm timeout has to
+                        # be visible here: an operator meeting the expiry as a
+                        # bare 409 mid-drive learns nothing from it.
+                        "arm_timeout_s": ARM_TIMEOUT_S,
+                        "armed_for_s": round(time.time() - _armed_t, 1) if _armed else None,
                         "watchdog_trips": _watchdog_trips})
 
 
@@ -206,7 +211,9 @@ def estop():
     return jsonify({"estop": True, "armed": False})
 
 
-ACTIONS = ("stand_up", "lay_down", "sit", "wave", "heart")
+ACTIONS = ("stand_up", "lay_down", "sit", "wave", "heart",
+           "front_flip", "back_flip", "left_flip", "stretch", "dance",
+           "front_jump", "front_pounce")
 
 
 @app.route("/action/<name>", methods=["POST"])
@@ -225,6 +232,14 @@ def action(name):
         "sit": sport.Sit,
         "wave": sport.Hello,
         "heart": sport.Heart,
+        # trukkok -- ugyanaz a SportClient, csak tobb DDS parancs neve
+        "front_flip": sport.FrontFlip,
+        "back_flip": sport.BackFlip,
+        "left_flip": sport.LeftFlip,
+        "stretch": sport.Stretch,
+        "dance": sport.Dance1,
+        "front_jump": sport.FrontJump,
+        "front_pounce": sport.FrontPounce,
     }
     fn = fns.get(name)
     if fn is None:
