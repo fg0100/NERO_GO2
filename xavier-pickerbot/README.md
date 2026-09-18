@@ -14,6 +14,8 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 - [docs/05-sajat-projekt-iranyitopult.md](docs/05-sajat-projekt-iranyitopult.md) — **saját projekt #1**: élő webes irányítópult (kamerák + LiDAR + 3D point cloud)
 - [docs/06-sajat-projekt-akademia.md](docs/06-sajat-projekt-akademia.md) — **saját projekt #2**: Pickerbot Akadémia — oktatási robotika-platform terve + autonóm generáló pipeline
 - [docs/07-ismert-hibak.md](docs/07-ismert-hibak.md) — hibajelenség → ok → javítás táblázat, drágán megszerzett tudás
+- [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) — **saját projekt #3**: kézi vezérlés (bázis-drive valós-képes ÉLESÍTÉS mögött, kar MOCK-ONLY) — 🔴 élő teszt előtt olvasd el, `/cmd_vel` nincs megerősítve ezen a robotpéldányon
+- [docs/09-robot-halozat.md](docs/09-robot-halozat.md) — **a közös robot-hálózat** (2026-09-18): gateway PC + TP-Link router, IP-kiosztás, elérés, hibaelhárítás
 - [scripts/](scripts/) — a ténylegesen használt kapcsolódó/indító szkriptek, másolható egy az egyben
 - [inventory.html](inventory.html) — vizuális szoftver-/tárhely-leltár a robot lemezéről
 - [pickerbot-akademia-terv.html](pickerbot-akademia-terv.html) — a teljes Akadémia-terv, 11 architektúra-ábrával
@@ -26,8 +28,8 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 | Fedélzeti gép | NVIDIA Jetson Xavier NX, JetPack/L4T 35.6.1 |
 | OS | Ubuntu 20.04.6 LTS |
 | ROS | Noetic (ROS 1, catkin), Python 3.8.10, CUDA 11.4 |
-| IP | `192.168.0.100` (fix, közvetlen Ethernet-kábelen a laptophoz) |
-| SSH | kulcsos, jelszó nélkül — `wheeltec@192.168.0.100`, kulcs: `~/.ssh/pickerbot_mini` |
+| IP | `192.168.123.50` (fix, a közös robot-hálón — lásd [docs/09-robot-halozat.md](docs/09-robot-halozat.md)); a saját Wi-Fi hotspotján továbbra is `192.168.0.100` |
+| SSH | kulcsos, jelszó nélkül — `wheeltec@192.168.123.50`, kulcs: `~/.ssh/pickerbot_mini` |
 | Sudo jelszó | `dongguan` (gyári alapértelmezett — ugyanaz, mint a Wi-Fi hotspot jelszava) |
 | Státusz | élő, tesztelt irányítópult 2026-08-25 óta; oktatási platform terve kész, generálása folyamatban |
 
@@ -36,6 +38,7 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 - **USB-C a Jetsonon adatport, nem tápbemenet.** Csak a barrel jack (19V) vagy a robot saját akkuja indítja el.
 - **Az `/camera/toggle_ir` service hívása összeomlasztja a kameradrivert** és USB-szinten beragasztja az eszközt — lásd [docs/07-ismert-hibak.md](docs/07-ismert-hibak.md).
 - A gyári lemezen 5 alváz-kar kombináció csomagjai vannak egy image-ben; a mi példányunkhoz **csak a `mini_mec_four_arm*` csomagok relevánsak** — a többihez generált kód ne nyúljon, ne is hivatkozzon rájuk.
+- **Nyitott kérdés (2026-09-18):** a `/cmd_vel` topic létezése/típusa ezen a konkrét robotpéldányon még nincs élőben megerősítve (a robot offline volt, amikor a kézi vezérlés épült) — lásd [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) "Első élő teszt" szakaszát, ez a lépés MINDENKÉPPEN kell a bázis-vezérlés éles használata előtt. A robotkar valós ízület-határai/topic-nevei sincsenek leolvasva — a kar-vezérlés addig MOCK-only marad.
 
 ## Licenc / szerzőség
 
