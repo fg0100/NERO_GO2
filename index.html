@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <title>NERO GO2 - 3D LiDAR SLAM Vizualizációk</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; display: flex; flex-direction: column; align-items: center; }
+    h1 { color: #38bdf8; margin-bottom: 10px; }
+    p.sub { color: #94a3b8; margin-bottom: 30px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; width: 100%; max-width: 900px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; text-decoration: none; color: inherit; transition: transform 0.2s, border-color 0.2s; }
+    .card:hover { transform: translateY(-4px); border-color: #38bdf8; background: #1e293b; }
+    .card h3 { margin-top: 0; color: #38bdf8; }
+    .card p { color: #cbd5e1; font-size: 14px; line-height: 1.5; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-bottom: 10px; background: #0284c7; color: white; }
+    .badge.green { background: #16a34a; }
+  </style>
+</head>
+<body>
+  <h1>NERO GO2 - 3D LiDAR SLAM Webes Felületek</h1>
+  <p class="sub">Válaszd ki az alábbi felületek egyikét a 3D SLAM kipróbálásához:</p>
+  
+  <div class="grid">
+    <a class="card" href="/etalon_slam.html">
+      <span class="badge green">Legújabb / Etalon</span>
+      <h3>1. Etalon 5x5 cm Mikró-Voxel SLAM</h3>
+      <p>Rögzített 5 cm-es etalon voxelekhez való folyamatos pozíció-korrekció (Scan-to-Map ICP) és drift megszüntetés.</p>
+    </a>
+
+    <a class="card" href="/confidence_slam.html">
+      <span class="badge">Voxel Térkép</span>
+      <h3>2. 5×5 cm Mikró-Voxel & OBB SLAM</h3>
+      <p>Konfidencia alapú 3D mikró-voxel építés RANSAC síktörléssel és 100% pontfelhő megtartással.</p>
+    </a>
+    
+    <a class="card" href="/keyframe_slam.html">
+      <span class="badge">Gráf SLAM</span>
+      <h3>3. Keyframe Graph SLAM</h3>
+      <p>Kulcskép gráf csomópontok (0.4m / 12°) és lokális ICP illesztések.</p>
+    </a>
+
+    <a class="card" href="/compare_3d.html">
+      <span class="badge">Demonstráció</span>
+      <h3>4. 3-Állapotú Összehasonlítás</h3>
+      <p>Nyers Odometria vs 2s Lokális ICP vs Globális Gráf Illesztés interaktív váltó.</p>
+    </a>
+  </div>
+</body>
+</html>

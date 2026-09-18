@@ -48,6 +48,7 @@ app = Flask(__name__)
 
 WEBRTC_BRIDGE_URL = os.environ.get("WEBRTC_BRIDGE_URL", "http://localhost:5001")
 HESAI_BRIDGE_URL = os.environ.get("HESAI_BRIDGE_URL", "http://localhost:5003")
+HESAI_DEVICE_IP = os.environ.get("HESAI_DEVICE_IP", "192.168.123.20")
 
 # Kritikus tudományos-hitelességi jelölés a /showcase-hez: minden onnan
 # kimenő adatcsomag jelzi, hogy szintetikus (mock) vagy valós robot-adat —
@@ -90,6 +91,8 @@ dog_data = {
     "pitch": None,
     "yaw": None,
     "mode_label": "—",
+    "sport_state_time": None,
+    "low_state_time": None,
 }
 _armed = False
 _last_activity = time.time()
@@ -186,15 +189,17 @@ else:
 # akár egyszerre is futhat). Csak OLVASUNK innen is — szín-kép + mélység-
 # pontfelhő, sosem publikálunk vissza, tehát ez sem tud a robotnak
 # parancsot küldeni.
-REALSENSE_ROSBRIDGE_HOST = os.environ.get("REALSENSE_ROSBRIDGE_HOST")
+REALSENSE_ROSBRIDGE_HOST = os.environ.get("REALSENSE_ROSBRIDGE_HOST", "127.0.0.1")
 REALSENSE_ROSBRIDGE_PORT = int(os.environ.get("REALSENSE_ROSBRIDGE_PORT", "9091"))
 
 _realsense_lock = threading.Lock()
 _realsense_state = {
     "connected": False,
     "color_jpg_b64": None,  # a legutóbbi szín-képkocka, JPEG, base64-ben (közvetlenül <img src="data:...">-be tehető)
+    "depth_jpg_b64": None,  # a színezett 2D mélységtérkép JPEG base64-ben
     "points": None,  # letisztított/ritkított [x,y,z] lista a mélység-pontfelhőből
 }
+
 
 
 def _decode_pointcloud2(msg):
@@ -244,8 +249,14 @@ def _realsense_bridge_thread():
                 with _realsense_lock:
                     _realsense_state["points"] = pts
 
+            def on_depth_colorized(msg):
+                with _realsense_lock:
+                    _realsense_state["depth_jpg_b64"] = msg["data"]
+
             color_topic = roslibpy.Topic(client, "/camera/color/image_raw/compressed", "sensor_msgs/CompressedImage")
             color_topic.subscribe(on_color)
+            depth_color_topic = roslibpy.Topic(client, "/camera/depth/colorized/compressed", "sensor_msgs/CompressedImage")
+            depth_color_topic.subscribe(on_depth_colorized)
             points_topic = roslibpy.Topic(client, "/camera/depth/color/points", "sensor_msgs/PointCloud2")
             points_topic.subscribe(on_points)
 
@@ -285,6 +296,12 @@ def _set_armed(value: bool):
         _armed = value
         if value:
             _last_activity = time.time()
+    if not value:
+        try:
+            with _macro_lock:
+                _macro_state["abort_flag"] = True
+        except NameError:
+            pass
 
 
 def _watchdog():
@@ -353,14 +370,10 @@ def compute_nav_command(pose, target):
     return vx, 0.0, vyaw, False
 
 
-# 2026-09-05, bemutató napja, user explicit biztonsági utasítása: a
-# térképre kattintós navigáció (statikus, tegnapi mock-térképen!) NE
-# mozgassa a valós robotot — a térkép nem a jelenlegi valós környezet,
-# tehát a P-szabályozó vak lenne a tényleges akadályokra. A UI a tervezett
-# útvonalat/fotó-akciót ettől függetlenül bemutatja, csak a Move() hívás
-# marad ki. A robotot ma KIZÁRÓLAG a joystick/WASD mozgatja.
-NAV_MOVE_ROBOT = False
-NAV_SIMULATED_TRAVEL_S = 2.5  # ennyi "utazási időt" szimulálunk célpontonként
+# Autonóm térképi navigáció: zárt hurkú P-szabályozó a robot sport-odometriája alapján.
+# Csak élesített (ARM) állapotban ad ki mozgásparancsot (SportClient.Move()).
+NAV_MOVE_ROBOT = True
+NAV_SIMULATED_TRAVEL_S = 2.5  # tartalék szimulált idő disarmed állapotban
 
 
 def _navigation_thread():
@@ -545,7 +558,230 @@ _mission_runner = mission.MissionRunner(
 )
 
 
+# --- Mozgás Makró & Útvonal Rögzítő / Visszajátszó Motor (Macro Subsystem) ---
+MACRO_DIR = os.path.join(os.path.dirname(__file__), "macros")
+os.makedirs(MACRO_DIR, exist_ok=True)
+
+_macro_lock = threading.Lock()
+_macro_state = {
+    "recording": False,
+    "record_start_t": 0.0,
+    "record_name": "",
+    "samples": [],
+    "waypoints": [],
+    "pending_action": None,
+    "playing": False,
+    "play_thread": None,
+    "play_macro_name": "",
+    "play_progress": {
+        "current_t": 0.0,
+        "total_t": 0.0,
+        "pct": 0,
+        "status": "idle"
+    },
+    "abort_flag": False,
+}
+
+
+def _macro_record_worker():
+    """10 Hz-es mintavevő szál a kézi mozgások és pozíciók rögzítéséhez."""
+    while True:
+        time.sleep(0.1)
+        with _macro_lock:
+            if not _macro_state["recording"]:
+                continue
+            t_start = _macro_state["record_start_t"]
+            pending_act = _macro_state["pending_action"]
+            _macro_state["pending_action"] = None
+
+        t_rel = round(time.time() - t_start, 3)
+        with _lock:
+            vx = _move_state["x"]
+            vy = _move_state["y"]
+            vyaw = _move_state["yaw"]
+            rx = dog_data.get("position_x")
+            ry = dog_data.get("position_y")
+            ryaw = dog_data.get("sport_yaw")
+
+        sample = {
+            "t": t_rel,
+            "vx": round(vx, 3),
+            "vy": round(vy, 3),
+            "vyaw": round(vyaw, 3),
+            "x": round(rx, 3) if rx is not None else 0.0,
+            "y": round(ry, 3) if ry is not None else 0.0,
+            "yaw": round(ryaw, 3) if ryaw is not None else 0.0,
+            "action": pending_act,
+        }
+        with _macro_lock:
+            if _macro_state["recording"]:
+                _macro_state["samples"].append(sample)
+
+
+threading.Thread(target=_macro_record_worker, daemon=True).start()
+
+
+def _macro_playback_worker(macro_data, speed):
+    """Zárt hurkú, térbeli koordinátákra navigáló makró visszajátszó motor.
+    A rögzített (X, Y) koordinátákhoz vezeti a robotot a valós térben P-szabályozóval,
+    ahelyett, hogy vakon, nyílt hurokban ismételné a sebességparancsokat."""
+    name = macro_data.get("name", "unnamed")
+    waypoints = macro_data.get("waypoints", [])
+    samples = macro_data.get("samples", [])
+
+    # Célpontok kiválasztása:
+    # 1. Ha vannak explicit mentett útpontok (user lerakott pontok), azokat járjuk be sorban.
+    # 2. Ha nincsenek, a folytonos mintákból kinyerjük a térbeli nyomvonalat ~0.35m-es lépésekben.
+    if waypoints and len(waypoints) > 0:
+        targets = [dict(w) for w in waypoints]
+    elif samples and len(samples) > 0:
+        targets = []
+        for i, s in enumerate(samples):
+            if i == 0 or i == len(samples) - 1 or s.get("action"):
+                targets.append(dict(s))
+            else:
+                last = targets[-1]
+                dist = math.hypot(s.get("x", 0.0) - last.get("x", 0.0), s.get("y", 0.0) - last.get("y", 0.0))
+                if dist >= 0.35:
+                    targets.append(dict(s))
+    else:
+        with _macro_lock:
+            _macro_state["playing"] = False
+            _macro_state["play_progress"]["status"] = "done"
+        return
+
+    s = max(0.2, min(1.0, float(speed)))
+    total_targets = len(targets)
+    logger.info("Makró térbeli visszajátszás indítása: '%s' %.2fx sebességgel (%d célpont)", name, s, total_targets)
+
+    with _macro_lock:
+        _macro_state["play_macro_name"] = name
+        _macro_state["play_progress"] = {
+            "current_t": 0.0,
+            "total_t": round(macro_data.get("duration_s", total_targets * 3.0) / s, 1),
+            "pct": 0,
+            "status": "playing"
+        }
+
+    MAX_SAFE_VX = 0.25
+    MAX_SAFE_VYAW = 0.45
+    WP_TIMEOUT_S = 35.0  # max 35mp célpontonként az elakadás kivédésére
+
+    play_start_wall = time.time()
+
+    try:
+        for wp_idx, target in enumerate(targets):
+            with _macro_lock:
+                if _macro_state["abort_flag"]:
+                    logger.info("Makró visszajátszás megszakítva (abort flag)")
+                    break
+            if not _is_armed():
+                logger.warning("Makró visszajátszás megszakítva: robot zárolva (disarmed)")
+                break
+
+            tx = float(target.get("x", 0.0))
+            ty = float(target.get("y", 0.0))
+            target_pose = {"x": tx, "y": ty}
+            wp_start = time.time()
+
+            logger.info("Makró navigálás célponthoz #%d/%d: (x=%.2f, y=%.2f)", wp_idx + 1, total_targets, tx, ty)
+
+            # Zárt hurkú P-szabályozás az adott térbeli pont eléréséig
+            while time.time() - wp_start < WP_TIMEOUT_S:
+                with _macro_lock:
+                    aborted = _macro_state["abort_flag"]
+                if aborted or not _is_armed():
+                    break
+
+                with _lock:
+                    rx = dog_data.get("position_x")
+                    ry = dog_data.get("position_y")
+                    ryaw = dog_data.get("sport_yaw")
+
+                if rx is None or ry is None or ryaw is None:
+                    time.sleep(0.05)
+                    continue
+
+                vx, vy, vyaw, reached = compute_nav_command({"x": rx, "y": ry, "yaw": ryaw}, target_pose)
+                if reached:
+                    if sport_client:
+                        try:
+                            sport_client.Move(0, 0, 0)
+                        except Exception:
+                            pass
+                    break
+
+                # Sebességskálázás a csúszka értéke alapján
+                vx_cmd = max(-MAX_SAFE_VX, min(MAX_SAFE_VX, vx * s))
+                vyaw_cmd = max(-MAX_SAFE_VYAW, min(MAX_SAFE_VYAW, vyaw * s))
+
+                if sport_client:
+                    try:
+                        sport_client.Move(vx_cmd, 0.0, vyaw_cmd)
+                    except Exception:
+                        logger.exception("Makró Move() sikertelen")
+
+                _touch_activity()
+
+                elapsed = time.time() - play_start_wall
+                pct = min(99, int(((wp_idx + 0.5) / total_targets) * 100))
+                with _macro_lock:
+                    _macro_state["play_progress"]["current_t"] = round(elapsed, 1)
+                    _macro_state["play_progress"]["pct"] = pct
+
+                time.sleep(0.05)
+
+            with _macro_lock:
+                if _macro_state["abort_flag"] or not _is_armed():
+                    break
+
+            # Célponton rögzített akció lefuttatása (pl. sit, hello, wave)
+            action_name = target.get("action")
+            if action_name and not str(action_name).startswith("waypoint:"):
+                if sport_client:
+                    try:
+                        sport_client.Move(0, 0, 0)
+                    except Exception:
+                        pass
+                action_func = _actions().get(action_name)
+                if action_func:
+                    logger.info("Makró útpont akció végrehajtása: %s", action_name)
+                    try:
+                        action_func()
+                    except Exception:
+                        logger.exception("Makró akció sikertelen: %s", action_name)
+                    action_deadline = time.time() + 3.5
+                    while time.time() < action_deadline:
+                        with _macro_lock:
+                            aborted = _macro_state["abort_flag"]
+                        if aborted or not _is_armed():
+                            break
+                        _touch_activity()
+                        time.sleep(0.05)
+
+            elapsed = time.time() - play_start_wall
+            pct = min(100, int(((wp_idx + 1) / total_targets) * 100))
+            with _macro_lock:
+                _macro_state["play_progress"]["current_t"] = round(elapsed, 1)
+                _macro_state["play_progress"]["pct"] = pct
+
+    finally:
+        if sport_client:
+            try:
+                sport_client.Move(0, 0, 0)
+            except Exception:
+                pass
+        with _macro_lock:
+            _macro_state["playing"] = False
+            final_status = "aborted" if _macro_state["abort_flag"] or not _is_armed() else "done"
+            _macro_state["play_progress"]["status"] = final_status
+            if final_status == "done":
+                _macro_state["play_progress"]["pct"] = 100
+        logger.info("Makró térbeli visszajátszás befejeződött, állapot: %s", final_status)
+
+
 # --- Security mód: objektumkövetés (mock ma este, ld. docs/15) -----------
+
 TRACK_MAX_VYAW = 0.4
 TRACK_KP_ANG = 1.0
 TRACK_CENTER_TOLERANCE = 0.06  # a bbox-közép ennyin belül van a képközéptől -> nem forog tovább
@@ -874,6 +1110,19 @@ def _live_map_update_once():
         res, ox, oy = st["resolution"], st["origin_x"], st["origin_y"]
         log_odds = st["log_odds"]
 
+        # Ha a robot elhagyta a térkép területét (pl. áthelyezték másik helyszínre vagy >7m-re eltávolodott),
+        # automatikusan újraközpontosítjuk a térképet a robot körül!
+        cells = st["cells"]
+        map_cx = ox + (cells * res) / 2.0
+        map_cy = oy + (cells * res) / 2.0
+        if log_odds is not None and math.hypot(rx - map_cx, ry - map_cy) > (LIVE_MAP_SIZE_M * 0.40):
+            logger.info("Robot elhagyta a térkép területét (táv: %.1fm) — automatikus újraközpontosítás...", math.hypot(rx - map_cx, ry - map_cy))
+            ox = rx - LIVE_MAP_SIZE_M / 2.0
+            oy = ry - LIVE_MAP_SIZE_M / 2.0
+            st["origin_x"] = ox
+            st["origin_y"] = oy
+            log_odds.fill(0)
+
         step = max(1, world_xy.shape[0] // 300)
         # A tényleges akkumulációs logika (log-odds Bresenham-frissítés +
         # a megjelenítendő tri-state rács újraszámolása) a lidar_mapping
@@ -886,31 +1135,49 @@ def _live_map_update_once():
 
 
 def _live_map_thread():
-    # Az induláskori pozíció körül fix méretű rácsot foglalunk le (nincs
-    # dinamikus átméretezés — élő demóhoz elég, ld. build_map.py kommentje
-    # a hasonló döntésről).
-    while True:
+    map_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mapping", "walk_seta1.map.json"))
+    if os.path.exists(map_file):
+        try:
+            with open(map_file, "r") as mf:
+                mdata = json.load(mf)
+                with _live_map_lock:
+                    st = _live_map_state
+                    st["origin_x"] = mdata["origin_x"]
+                    st["origin_y"] = mdata["origin_y"]
+                    st["resolution"] = mdata["resolution"]
+                    st["cells"] = mdata["width"]
+                    st["grid"] = np.array(mdata["data"], dtype=np.int16).reshape((mdata["height"], mdata["width"]))
+                    st["ready"] = True
+                logger.info("Live map: loaded pre-recorded Hesai SLAM map %s (%dx%d)", map_file, mdata["width"], mdata["height"])
+        except Exception as ex:
+            logger.warning("Failed loading pre-recorded map: %s", ex)
+
+    for _ in range(20):
         with _lock:
             rx0, ry0 = dog_data["position_x"], dog_data["position_y"]
         if rx0 is not None and ry0 is not None:
             break
-        time.sleep(0.5)
+        time.sleep(0.2)
+
+    rx0 = rx0 if rx0 is not None else 0.0
+    ry0 = ry0 if ry0 is not None else 0.0
 
     cells = int(LIVE_MAP_SIZE_M / LIVE_MAP_RESOLUTION)
     with _live_map_lock:
         st = _live_map_state
-        st["origin_x"] = rx0 - LIVE_MAP_SIZE_M / 2
-        st["origin_y"] = ry0 - LIVE_MAP_SIZE_M / 2
-        st["cells"] = cells
-        st["grid"] = np.full((cells, cells), -1, dtype=np.int16)
-        st["log_odds"] = np.zeros((cells, cells), dtype=np.float32)
-        st["ready"] = True
-    logger.info("Live map: elindult, origin=(%.2f, %.2f), %dx%d cella", st["origin_x"], st["origin_y"], cells, cells)
+        if not st["ready"]:
+            st["origin_x"] = rx0 - LIVE_MAP_SIZE_M / 2
+            st["origin_y"] = ry0 - LIVE_MAP_SIZE_M / 2
+            st["cells"] = cells
+            st["grid"] = np.full((cells, cells), -1, dtype=np.int16)
+            st["log_odds"] = np.zeros((cells, cells), dtype=np.float32)
+            st["ready"] = True
+    logger.info("Live map: ready=%s, origin=(%.2f, %.2f)", _live_map_state["ready"], _live_map_state["origin_x"], _live_map_state["origin_y"])
 
     while True:
         _live_map_update_once()
         _live_map_maybe_save_snapshot()
-        time.sleep(0.2)
+        time.sleep(0.5)
 
 
 def _live_map_maybe_save_snapshot():
@@ -998,7 +1265,10 @@ def _pose_walk(t):
     for phase in _TROT_PHASE:
         swing = math.sin(t * 4.0 + phase)
         hip = _STAND_HIP + 0.05 * math.sin(t * 4.0 + phase + math.pi / 2)
-        thigh = _STAND_THIGH + 0.35 * swing
+        # 2026-09-09 FIX: swing > 0 esetén a comb előre lendül (a dőlésszög
+        # csökken), nem hátrafelé — korábban +0.35 volt, ami miatt az avatár
+        # hátrafelé lépkedett (RR/RL felé nyúlt a levegőben).
+        thigh = _STAND_THIGH - 0.35 * swing
         calf = _STAND_CALF - 0.25 * max(swing, 0.0)
         q.extend([hip, thigh, calf])
     return q
@@ -1115,6 +1385,8 @@ def _init_mock_sdk():
             ]
             dog_data["motor_temp"] = [round(32 + 6 * (i % 3) + 2 * math.sin(t * 0.05 + i)) for i in range(12)]
             dog_data["mode_label"] = label
+            dog_data["sport_state_time"] = time.time()
+            dog_data["low_state_time"] = time.time()
         time.sleep(0.05)
 
 
@@ -1148,6 +1420,7 @@ def _init_sdk():
                 dog_data["roll"] = round(msg.imu_state.rpy[0], 3)
                 dog_data["pitch"] = round(msg.imu_state.rpy[1], 3)
                 dog_data["yaw"] = round(msg.imu_state.rpy[2], 3)
+                dog_data["low_state_time"] = time.time()
 
         def sport_state_handler(msg: SportModeState_):
             with _lock:
@@ -1170,6 +1443,7 @@ def _init_sdk():
                 # érkezik — forduláskor ez pár tized másodperces yaw/pozíció
                 # csúszást okozott, ami a térképen szétkenődésként jelent meg).
                 dog_data["sport_yaw"] = round(msg.imu_state.rpy[2], 3)
+                dog_data["sport_state_time"] = time.time()
 
         # domainId=0 (matches the robot's own rt/... topics), network
         # interface name is the Jetson's real NIC (ld. docs/01-halozat.md).
@@ -1224,9 +1498,14 @@ _FLIP_MIN_VOLTAGE = 24.0  # 2026-09-17: óvatos becslés, nincs gyári min.-küs
 def pose_snapshot():
     """Egyszerű, nem-streamelő JSON-pillanatkép a robot pozíciójáról/orientációjáról
     — a saját (ROS-mentes) térkép-adat-dömper script ezt kérdezi le HTTP GET-tel,
-    nem kell SSE-t parse-olnia."""
+    nem kell SSE-t parse-olnia.
+    2026-09-09: t, sport_age_ms és low_age_ms hozzáadva a fáziskésés ellenőrzéséhez."""
+    now = time.time()
     with _lock:
+        st_time = dog_data.get("sport_state_time")
+        lt_time = dog_data.get("low_state_time")
         return jsonify({
+            "t": now,
             "position_x": dog_data["position_x"],
             "position_y": dog_data["position_y"],
             "position_z": dog_data["position_z"],
@@ -1235,10 +1514,51 @@ def pose_snapshot():
             # NEM a "yaw" mezőt (az a külön LowState_ DDS-üzenetből jön,
             # aszinkron a position-nel, ld. sport_state_handler kommentje).
             "yaw": dog_data["sport_yaw"],
+            "lowstate_yaw": dog_data["yaw"],
             "roll": dog_data["roll"],
             "pitch": dog_data["pitch"],
+            "sport_age_ms": round((now - st_time) * 1000, 1) if st_time else None,
+            "low_age_ms": round((now - lt_time) * 1000, 1) if lt_time else None,
             "sdk_ready": sdk_ready,
         })
+
+
+@app.route("/sync_snapshot")
+def sync_snapshot():
+    """2026-09-09: Célzott diagnosztikai végpont — egyetlen atomi lekérdezésben
+    adja vissza a pillanatnyi pozíciót, yaw-t, motor-szögeket és a legfrissebb
+    Hesai LiDAR csomagot az időbélyegekkel együtt, a mintavételi aszinkronitás
+    számszerű méréséhez."""
+    now = time.time()
+    with _lock:
+        st_time = dog_data.get("sport_state_time")
+        lt_time = dog_data.get("low_state_time")
+        data = {
+            "t": now,
+            "position_x": dog_data["position_x"],
+            "position_y": dog_data["position_y"],
+            "position_z": dog_data["position_z"],
+            "sport_yaw": dog_data["sport_yaw"],
+            "lowstate_yaw": dog_data["yaw"],
+            "roll": dog_data["roll"],
+            "pitch": dog_data["pitch"],
+            "yaw_speed": dog_data["yaw_speed"],
+            "velocity_x": dog_data["velocity_x"],
+            "motor_q": dog_data["motor_q"],
+            "sport_age_ms": round((now - st_time) * 1000, 1) if st_time else None,
+            "low_age_ms": round((now - lt_time) * 1000, 1) if lt_time else None,
+            "sdk_ready": sdk_ready,
+        }
+    points = []
+    try:
+        resp = requests.get(f"{HESAI_BRIDGE_URL}/lidar", timeout=0.5)
+        if resp.status_code == 200:
+            points = resp.json()
+    except Exception:
+        pass
+    data["lidar_points_count"] = len(points)
+    data["lidar_points"] = points
+    return jsonify(data)
 
 
 @app.route("/")
@@ -1322,6 +1642,54 @@ def realsense_data():
     return Response(generate(), mimetype="text/event-stream")
 
 
+@app.route("/realsense_feed")
+def realsense_feed():
+    """Intel RealSense D435i MJPEG videofolyam a rosbridge /camera/color/image_raw/compressed-ből."""
+    import base64
+
+    def generate():
+        last_b64 = None
+        while True:
+            with _realsense_lock:
+                b64 = _realsense_state.get("color_jpg_b64")
+            if b64 and b64 != last_b64:
+                last_b64 = b64
+                try:
+                    raw_jpg = base64.b64decode(b64)
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + raw_jpg + b"\r\n"
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.04)
+
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/realsense_depth_feed")
+def realsense_depth_feed():
+    """Intel RealSense D435i színezett 2D mélységtérkép MJPEG videofolyam."""
+    import base64
+
+    def generate():
+        last_b64 = None
+        while True:
+            with _realsense_lock:
+                b64 = _realsense_state.get("depth_jpg_b64")
+            if b64 and b64 != last_b64:
+                last_b64 = b64
+                try:
+                    raw_jpg = base64.b64decode(b64)
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + raw_jpg + b"\r\n"
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.04)
+
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
 @app.route("/camera_feed")
 def camera_feed():
     def generate():
@@ -1348,15 +1716,83 @@ def lidar_proxy():
         return jsonify({"error": str(e)}), 502
 
 
+_mock_hesai_cache = []
+
+def _load_mock_hesai():
+    global _mock_hesai_cache
+    if _mock_hesai_cache:
+        return _mock_hesai_cache
+    paths = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mapping", "walk_kicsi.jsonl")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mapping", "walk_seta1.jsonl")),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for idx, line in enumerate(f):
+                        if idx > 150:
+                            break
+                        data = json.loads(line)
+                        if "points" in data and data["points"]:
+                            _mock_hesai_cache.append([[pt[0], pt[1], pt[2]] for pt in data["points"]])
+                if _mock_hesai_cache:
+                    logger.info("Loaded %d mock Hesai point cloud frames from %s", len(_mock_hesai_cache), p)
+                    break
+            except Exception as ex:
+                logger.warning("Failed loading mock hesai: %s", ex)
+    return _mock_hesai_cache
+
+
 @app.route("/lidar_hesai_proxy")
 def lidar_hesai_proxy():
     """A 2026-09-04-én felszerelt külső Hesai PandarXT-16 navigációs LiDAR
     pontfelhője, a hesai_bridge szolgáltatáson (:5003) keresztül."""
+    limit = int(request.args.get("limit", "18000"))
     try:
-        r = requests.get(f"{HESAI_BRIDGE_URL}/lidar", timeout=2)
-        return Response(r.content, status=r.status_code, mimetype="application/json")
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+        r = requests.get(f"{HESAI_BRIDGE_URL}/lidar?limit={limit}", timeout=1)
+        if r.status_code == 200:
+            return Response(r.content, status=r.status_code, mimetype="application/json")
+    except requests.RequestException:
+        pass
+
+    frames = _load_mock_hesai()
+    if frames:
+        idx = int(time.time() * 5) % len(frames)
+        pts = frames[idx][:limit]
+        return jsonify(pts)
+    return jsonify([])
+
+
+@app.route("/api/hesai/spin_speed", methods=["GET", "POST"])
+def api_hesai_spin_speed():
+    """Hesai PandarXT-16 forgási frekvencia lekérdezése és állítása.
+    Értékek: '1' = 300 rpm (5 Hz, 2x sűrűbb horizontális felbontás: 0.09-0.18 fok),
+             '2' = 600 rpm (10 Hz, gyári alapértelmezett),
+             '3' = 1200 rpm (20 Hz, ritkább mintavétel)."""
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        val = str(data.get("value", "1"))
+        try:
+            url = f"http://{HESAI_DEVICE_IP}/pandar.cgi?action=set&object=lidar&key=spin_speed&value={val}"
+            r = requests.get(url, timeout=3)
+            logger.info("Hesai forgási sebesség beállítva: %s -> HTTP %d", val, r.status_code)
+            return jsonify({"status": "ok", "value": val, "response": r.json() if r.status_code == 200 else r.text})
+        except Exception as e:
+            logger.exception("Hiba a Hesai forgási sebesség beállításakor")
+            return jsonify({"error": str(e)}), 502
+    else:
+        try:
+            url = f"http://{HESAI_DEVICE_IP}/pandar.cgi?action=get&object=lidar_config"
+            r = requests.get(url, timeout=3)
+            if r.status_code == 200:
+                body = r.json().get("Body", {})
+                spin_speed = str(body.get("SpinSpeed", "1"))
+                return jsonify({"status": "ok", "spin_speed": spin_speed})
+            return jsonify({"status": "error", "code": r.status_code}), 502
+        except Exception as e:
+            logger.exception("Hiba a Hesai konfiguráció lekérdezésekor")
+            return jsonify({"error": str(e)}), 502
 
 
 @app.route("/data")
@@ -1485,6 +1921,8 @@ def api_estop():
         _follow_state["detected"] = False
         _follow_state["bbox"] = None
         _follow_state["last_event"] = {"type": "estop", "t": time.time()}
+    with _macro_lock:
+        _macro_state["abort_flag"] = True
     if sport_client:
         try:
             sport_client.Move(0, 0, 0)
@@ -1647,6 +2085,28 @@ def nav_status():
         })
 
 
+@app.route("/reset_map", methods=["POST"])
+def reset_map():
+    """Manuális térkép-újraközpontosítás az aktuális robot-pozíció körül."""
+    with _lock:
+        rx, ry = dog_data["position_x"], dog_data["position_y"]
+    if rx is None or ry is None:
+        return jsonify({"error": "nincs odometria adat"}), 400
+    with _live_map_lock:
+        st = _live_map_state
+        cells = st.get("cells", int(LIVE_MAP_SIZE_M / LIVE_MAP_RESOLUTION))
+        st["origin_x"] = rx - LIVE_MAP_SIZE_M / 2.0
+        st["origin_y"] = ry - LIVE_MAP_SIZE_M / 2.0
+        st["cells"] = cells
+        if st.get("grid") is not None:
+            st["grid"].fill(-1)
+        if st.get("log_odds") is not None:
+            st["log_odds"].fill(0)
+        st["ready"] = True
+    logger.info("Térkép manuálisan újraközpontosítva: origin=(%.2f, %.2f)", st["origin_x"], st["origin_y"])
+    return jsonify({"success": True, "origin_x": st["origin_x"], "origin_y": st["origin_y"]})
+
+
 @app.route("/update_joystick", methods=["POST"])
 def update_joystick():
     if not _is_armed():
@@ -1692,6 +2152,10 @@ def run_action(action_name):
             voltage = dog_data.get("voltage")
         if voltage is not None and voltage < _FLIP_MIN_VOLTAGE:
             return jsonify({"error": f"battery too low for flip ({voltage}V < {_FLIP_MIN_VOLTAGE}V)"}), 409
+
+    with _macro_lock:
+        if _macro_state["recording"]:
+            _macro_state["pending_action"] = action_name
 
     threading.Thread(target=action, daemon=True).start()
     _touch_activity()
@@ -1752,6 +2216,230 @@ def api_mission_cancel():
 @app.route("/mission_status")
 def mission_status():
     return jsonify(_mission_runner.status())
+
+
+# =====================================================================
+# Mozgás Makró & Útvonal Rögzítő / Visszajátszó Végpontok (Macros API)
+# =====================================================================
+
+@app.route("/macro/record/start", methods=["POST"])
+def macro_record_start():
+    if not _is_armed():
+        return jsonify({"error": "A robot nincs élesítve! Oldd fel (ARM) a felvétel előtt."}), 403
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name") or f"macro_{int(time.time())}"
+    safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip()
+    if not safe_name:
+        safe_name = f"macro_{int(time.time())}"
+
+    with _macro_lock:
+        _macro_state["recording"] = True
+        _macro_state["record_start_t"] = time.time()
+        _macro_state["record_name"] = safe_name
+        _macro_state["samples"] = []
+        _macro_state["waypoints"] = []
+        _macro_state["pending_action"] = None
+        _macro_state["play_progress"]["status"] = "recording"
+
+    logger.info("Makró felvétel elindítva: %s", safe_name)
+    return jsonify({"status": "recording_started", "name": safe_name})
+
+
+@app.route("/macro/record/waypoint", methods=["POST"])
+def macro_record_waypoint():
+    payload = request.get_json(silent=True) or {}
+    action_name = payload.get("action")
+    with _lock:
+        rx = dog_data.get("position_x")
+        ry = dog_data.get("position_y")
+        ryaw = dog_data.get("sport_yaw")
+
+    with _macro_lock:
+        t_rel = round(time.time() - _macro_state["record_start_t"], 2) if _macro_state["recording"] else 0.0
+        wp = {
+            "id": len(_macro_state["waypoints"]) + 1,
+            "t": t_rel,
+            "x": round(rx, 3) if rx is not None else 0.0,
+            "y": round(ry, 3) if ry is not None else 0.0,
+            "yaw": round(ryaw, 3) if ryaw is not None else 0.0,
+            "action": action_name
+        }
+        _macro_state["waypoints"].append(wp)
+        if _macro_state["recording"]:
+            _macro_state["pending_action"] = f"waypoint:{wp['id']}"
+
+    logger.info("Makró útpont rögzítve: #%d (x=%.2f, y=%.2f, yaw=%.2f)", wp["id"], wp["x"], wp["y"], wp["yaw"])
+    return jsonify({"status": "ok", "waypoint": wp})
+
+
+@app.route("/macro/record/stop", methods=["POST"])
+def macro_record_stop():
+    payload = request.get_json(silent=True) or {}
+    custom_name = payload.get("name")
+    with _macro_lock:
+        if not _macro_state["recording"]:
+            return jsonify({"error": "Nincs aktív felvétel"}), 400
+        _macro_state["recording"] = False
+        _macro_state["play_progress"]["status"] = "idle"
+        name = custom_name or _macro_state["record_name"] or f"macro_{int(time.time())}"
+        safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip()
+        samples = list(_macro_state["samples"])
+        waypoints = list(_macro_state["waypoints"])
+
+    duration_s = round(samples[-1]["t"], 2) if samples else 0.0
+    dist_m = 0.0
+    for i in range(1, len(samples)):
+        dx = samples[i]["x"] - samples[i-1]["x"]
+        dy = samples[i]["y"] - samples[i-1]["y"]
+        dist_m += math.hypot(dx, dy)
+
+    macro_data = {
+        "name": safe_name,
+        "created_at": time.time(),
+        "duration_s": duration_s,
+        "distance_m": round(dist_m, 2),
+        "sample_count": len(samples),
+        "waypoint_count": len(waypoints),
+        "samples": samples,
+        "waypoints": waypoints
+    }
+
+    filepath = os.path.join(MACRO_DIR, f"{safe_name}.json")
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(macro_data, f, indent=2)
+        logger.info("Makró sikeresen elmentve: '%s' (%s, %d minta, %.2f m)", safe_name, filepath, len(samples), dist_m)
+    except Exception:
+        logger.exception("Hiba a makró mentésekor: %s", safe_name)
+        return jsonify({"error": "Hiba a makró fájl mentésekor"}), 500
+
+    return jsonify({"status": "saved", "macro": {
+        "name": safe_name,
+        "duration_s": duration_s,
+        "distance_m": round(dist_m, 2),
+        "sample_count": len(samples),
+        "waypoint_count": len(waypoints)
+    }})
+
+
+@app.route("/macro/list", methods=["GET"])
+def macro_list():
+    macros = []
+    if os.path.exists(MACRO_DIR):
+        for fname in os.listdir(MACRO_DIR):
+            if fname.endswith(".json"):
+                fpath = os.path.join(MACRO_DIR, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    macros.append({
+                        "name": data.get("name", fname[:-5]),
+                        "created_at": data.get("created_at", 0),
+                        "duration_s": data.get("duration_s", 0.0),
+                        "distance_m": data.get("distance_m", 0.0),
+                        "sample_count": data.get("sample_count", len(data.get("samples", []))),
+                        "waypoint_count": data.get("waypoint_count", len(data.get("waypoints", []))),
+                    })
+                except Exception:
+                    logger.warning("Nem sikerült beolvasni a makró fájlt: %s", fname)
+    macros.sort(key=lambda m: m["created_at"], reverse=True)
+    return jsonify({"status": "ok", "macros": macros})
+
+
+@app.route("/macro/get/<name>", methods=["GET"])
+def macro_get(name):
+    safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip()
+    fpath = os.path.join(MACRO_DIR, f"{safe_name}.json")
+    if not os.path.exists(fpath):
+        return jsonify({"error": "A makró nem található"}), 404
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"status": "ok", "macro": data})
+    except Exception:
+        logger.exception("Hiba a makró betöltésekor: %s", safe_name)
+        return jsonify({"error": "Nem sikerült betölteni a makrót"}), 500
+
+
+@app.route("/macro/delete/<name>", methods=["POST", "DELETE"])
+def macro_delete(name):
+    safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip()
+    fpath = os.path.join(MACRO_DIR, f"{safe_name}.json")
+    if os.path.exists(fpath):
+        try:
+            os.remove(fpath)
+            logger.info("Makró törölve: %s", safe_name)
+            return jsonify({"status": "deleted", "name": safe_name})
+        except Exception:
+            logger.exception("Nem sikerült törölni a makrót: %s", safe_name)
+            return jsonify({"error": "Törlési hiba"}), 500
+    return jsonify({"error": "A makró nem található"}), 404
+
+
+@app.route("/macro/play", methods=["POST"])
+def macro_play():
+    if not _is_armed():
+        return jsonify({"error": "A robot nincs élesítve! Oldd fel (ARM) a kézi vezérlés panelen a lejátszáshoz."}), 403
+    if not sport_client:
+        return jsonify({"error": "Robot SDK kapcsolat nem elérhető!"}), 409
+
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name")
+    speed = float(payload.get("speed", 0.5))
+
+    if not name:
+        return jsonify({"error": "Nincs makró kiválasztva!"}), 400
+
+    safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip()
+    fpath = os.path.join(MACRO_DIR, f"{safe_name}.json")
+    if not os.path.exists(fpath):
+        return jsonify({"error": f"A '{safe_name}' makró nem található!"}), 404
+
+    with open(fpath, "r", encoding="utf-8") as f:
+        macro_data = json.load(f)
+
+    with _macro_lock:
+        if _macro_state["playing"]:
+            return jsonify({"error": "Már folyamatban van egy visszajátszás!"}), 409
+        _macro_state["playing"] = True
+        _macro_state["abort_flag"] = False
+
+    t = threading.Thread(target=_macro_playback_worker, args=(macro_data, speed), daemon=True)
+    t.start()
+    with _macro_lock:
+        _macro_state["play_thread"] = t
+
+    _touch_activity()
+    return jsonify({"status": "playing_started", "name": safe_name, "speed": speed})
+
+
+@app.route("/macro/abort", methods=["POST"])
+def macro_abort():
+    with _macro_lock:
+        _macro_state["abort_flag"] = True
+    if sport_client:
+        try:
+            sport_client.Move(0, 0, 0)
+        except Exception:
+            pass
+    logger.info("Makró visszajátszás manuálisan leállítva (/macro/abort)")
+    return jsonify({"status": "aborted"})
+
+
+@app.route("/macro/status", methods=["GET"])
+def macro_status():
+    with _macro_lock:
+        return jsonify({
+            "recording": _macro_state["recording"],
+            "record_time": round(time.time() - _macro_state["record_start_t"], 1) if _macro_state["recording"] else 0.0,
+            "sample_count": len(_macro_state["samples"]) if _macro_state["recording"] else 0,
+            "waypoint_count": len(_macro_state["waypoints"]) if _macro_state["recording"] else 0,
+            "playing": _macro_state["playing"],
+            "play_macro_name": _macro_state["play_macro_name"],
+            "progress": dict(_macro_state["play_progress"])
+        })
+
+
 
 
 if __name__ == "__main__":
