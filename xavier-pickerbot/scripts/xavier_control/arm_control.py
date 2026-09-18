@@ -1,64 +1,85 @@
 """MOCK-ONLY arm/gripper command builder for the Xavier Pickerbot Mini's
 4-DOF arm (Wheeltec `mini_mec_four_arm` + `mini_mec_four_arm_moveit_config`).
 
-Status (2026-09-18): this module NEVER talks to a real robot. It never
-imports rospy, actionlib, moveit_commander, or any ROS client library, and
-it never constructs or publishes to a real topic/action name. Everything
-`send()` produces is only appended to `self.sent` for tests/UI to inspect.
-There is no env-var, flag, or code path anywhere in this file that enables
-a real send — mirroring the Go2 dashboard's lowcmd_sender.py house pattern,
-the real publish path is simply NOT IMPLEMENTED here, not merely disabled,
-so nothing can be flipped on by mistake.
+Status (2026-09-18, updated after a live session on the real robot): this
+module NEVER talks to a real robot. It never imports rospy, actionlib,
+moveit_commander, or any ROS client library, and it never constructs or
+publishes to a real topic/action name. Everything `send()` produces is only
+appended to `self.sent` for tests/UI to inspect. There is no env-var, flag,
+or code path anywhere in this file that enables a real send — mirroring the
+Go2 dashboard's lowcmd_sender.py house pattern, the real publish path is
+simply NOT IMPLEMENTED here, not merely disabled, so nothing can be flipped
+on by mistake.
 
-WHY mock-only, unlike base_drive.py's real-capable (if gated) design:
-`/cmd_vel` with a Twist message is the universal, well-documented
-Wheeltec/ROS convention (used by their own `wheeltec_joy_control`), so it
-was judged safe to build for real (if ARMED-gated) sending once live-
-verified. The arm has NO such fallback: this robot's actual joint limits,
-topic name(s), message type(s), and field names have not been read from
-`mini_mec_four_arm_moveit_config`'s URDF/SRDF or verified via `rostopic`/
-`rosservice` against the live robot (which was unreachable this session).
-Sending real motion commands to a 4-DOF arm with guessed limits risks a
-collision with the gripper, base, or whatever the arm is holding. So this
-module stays mock-only until someone reads the real joint limits off the
-robot and deliberately builds a real sender the way lowcmd_sender.py was
-eventually built for Go2 — as a clearly separate, clearly labeled module.
+LIVE-VERIFIED (2026-09-18, robot reachable, bringup started for read-only
+inspection, base on the floor, no arm command ever sent):
+- Real topic: `/arm_cmd`, type `std_msgs/Float32MultiArray`, subscribed by
+  the `/wheeltec_robot` node (same node as `/cmd_vel`, not a separate MoveIt
+  action server). Confirmed via `rostopic info /arm_cmd` and by reading
+  `wheeltec_robot.cpp`'s `joint_states_Callback` on the robot.
+- `data` is exactly 4 floats: `[j1_rad, j2_rad, j3_rad, gripper_raw]`.
+  j1/j2/j3 are sent as radians, then internally scaled ×1000 and packed
+  into int16 by the firmware bridge — callers of this module should still
+  just pass radians, the scaling is the robot's own serial-protocol detail.
+  `gripper_raw` is cast straight to `uint8_t` with NO scaling in the C++
+  source — its real 0..255 (or narrower) open/close convention was NOT
+  found anywhere else in the source tree (no other in-repo publisher of
+  `/arm_cmd` to learn the convention from), so it is still UNVERIFIED.
+- Real joint names/limits, read from `mini_mec_moveit_four.urdf` on the
+  robot (`turn_on_wheeltec_robot/urdf/mini_mec_moveit_four.urdf`): only
+  `j1_joint`, `j2_joint`, `j3_joint` are independently commandable via
+  `/arm_cmd`; each is `type="revolute"`, limit `lower="-0.785" upper="0.785"`
+  (±45°), `effort="100"` (unit unclear — likely a generic MoveIt-exporter
+  placeholder, not a measured torque spec), `velocity="0"` (unspecified by
+  the URDF, NOT "unlimited" — do not assume any particular safe speed from
+  this). The `j4_1_joint`..`j4_6_joint` names seen in `/joint_states` are a
+  mechanically-linked gripper finger assembly, not independently
+  commandable — the single `gripper_raw` value in `/arm_cmd` drives all of
+  them together.
 
-PLACEHOLDER JOINT LIMITS BELOW — NOT FROM THIS ROBOT'S URDF.
-These are generic, conservative radian ranges for a small 4-DOF educational
-arm, invented for shape/testing purposes only. They MUST be replaced with
-the real `mini_mec_four_arm_moveit_config` joint limits (read from its
-URDF/SRDF, or from `rosparam get /robot_description` on the live robot)
-before any real send path is ever enabled. Treat any test or UI text that
-looks like a real number here as fiction until that replacement happens.
+STILL UNVERIFIED / left mock-only on purpose:
+- The exact `gripper_raw` value range and what "open" vs "closed" means
+  numerically (0..255? 0..1? a specific pair of values?).
+- Real accel/velocity behavior in practice — the URDF `velocity="0"` field
+  gives no usable ceiling, so no rate-limit number here is backed by a
+  measurement (unlike `base_drive.py`, which errs toward a conservative
+  guessed teleop cap; the arm has a collision risk with the gripper/base/
+  whatever it's holding, so a real send path is not being added until an
+  operator does a deliberate, supervised first physical joint-by-joint
+  test with the gripper convention confirmed by direct observation).
+- No physical arm motion command has ever been sent to this robot this
+  session or before, as far as this codebase's history shows.
 
-4-DOF ARM NOTE: with only 4 joints, this arm cannot reach an arbitrary 6D
-(position + orientation) pose — that needs at least 6 DOF. Only a
-position-based target (x, y, z, and whatever orientation degrees of
-freedom happen to fall out of 4 joints) makes sense here; full pose IK is
-not offered by this module and should not be assumed to work later either
-without checking the arm's actual reachable orientation subspace.
+Given the above, this module keeps j1/j2/j3 limits as REAL (not
+placeholder) — `JOINT_LIMITS_RAD` below is the actual URDF data — but
+stays mock-only end to end until a deliberate follow-up task builds a real
+sender AND someone has watched the arm move on the first few commands with
+a hand near the power switch.
+
+4-DOF ARM NOTE: with only 3 independently-commandable arm joints + 1
+gripper DOF, this arm cannot reach an arbitrary 6D (position + orientation)
+pose — that needs at least 6 DOF. Only a position-based target makes
+sense here; full pose IK is not offered by this module.
 """
 
 from __future__ import annotations
 
 import time
 
-# PLACEHOLDER — NOT from this robot's URDF, must be replaced with real
-# mini_mec_four_arm_moveit_config joint limits before any real send is
-# enabled. Generic small-educational-arm radian ranges, one entry per
-# joint, base-to-tip order assumed (unverified — the real joint ORDER is
-# also unverified).
-PLACEHOLDER_JOINT_LIMITS_RAD = [
-    (-1.57, 1.57),   # joint 1 (assumed base yaw) — PLACEHOLDER
-    (-1.20, 1.20),   # joint 2 (assumed shoulder pitch) — PLACEHOLDER
-    (-1.90, 1.90),   # joint 3 (assumed elbow pitch) — PLACEHOLDER
-    (-1.57, 1.57),   # joint 4 (assumed wrist) — PLACEHOLDER
+# REAL, live-verified 2026-09-18 from mini_mec_moveit_four.urdf on the
+# actual robot (j1_joint, j2_joint, j3_joint — see module docstring). Order
+# matches the /arm_cmd Float32MultiArray data[0..2] order confirmed in
+# wheeltec_robot.cpp's joint_states_Callback.
+JOINT_LIMITS_RAD = [
+    (-0.785, 0.785),   # j1_joint — URDF <limit lower upper>, verified
+    (-0.785, 0.785),   # j2_joint — URDF <limit lower upper>, verified
+    (-0.785, 0.785),   # j3_joint — URDF <limit lower upper>, verified
 ]
-NUM_JOINTS = len(PLACEHOLDER_JOINT_LIMITS_RAD)
+NUM_JOINTS = len(JOINT_LIMITS_RAD)
 
-# PLACEHOLDER gripper travel — not a measured value, just a 0..1 "closed to
-# open" fraction so the mock has something concrete to clamp and log.
+# Gripper (arm_cmd data[3], cast to uint8_t by the firmware bridge) — the
+# real open/closed numeric convention is UNVERIFIED (see docstring), so
+# this stays a conservative placeholder 0..1 fraction for the mock UI only.
 GRIPPER_CLOSED = 0.0
 GRIPPER_OPEN = 1.0
 
@@ -73,7 +94,7 @@ class ArmSafety:
     from LowCmdSender) so the clamp logic can be unit-tested and reused
     independently of the mock sender."""
 
-    def __init__(self, limits=PLACEHOLDER_JOINT_LIMITS_RAD):
+    def __init__(self, limits=JOINT_LIMITS_RAD):
         self.limits = list(limits)
 
     def clamp_joints(self, q):

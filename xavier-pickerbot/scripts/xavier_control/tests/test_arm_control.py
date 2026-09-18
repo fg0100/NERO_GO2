@@ -16,7 +16,7 @@ from arm_control import (
     GRIPPER_CLOSED,
     GRIPPER_OPEN,
     NUM_JOINTS,
-    PLACEHOLDER_JOINT_LIMITS_RAD,
+    JOINT_LIMITS_RAD,
     ArmSafety,
     MockArmSender,
 )
@@ -39,7 +39,7 @@ def test_clamp_joints_clips_out_of_range_command():
     safety = ArmSafety()
     wild = [99.0] * NUM_JOINTS
     clamped = safety.clamp_joints(wild)
-    for value, (lower, upper) in zip(clamped, PLACEHOLDER_JOINT_LIMITS_RAD):
+    for value, (lower, upper) in zip(clamped, JOINT_LIMITS_RAD):
         assert lower <= value <= upper
 
 
@@ -47,7 +47,7 @@ def test_clamp_joints_clips_large_negative_command():
     safety = ArmSafety()
     wild = [-99.0] * NUM_JOINTS
     clamped = safety.clamp_joints(wild)
-    for value, (lower, upper) in zip(clamped, PLACEHOLDER_JOINT_LIMITS_RAD):
+    for value, (lower, upper) in zip(clamped, JOINT_LIMITS_RAD):
         assert lower <= value <= upper
 
 
@@ -79,7 +79,7 @@ def test_is_safe_false_for_out_of_range_pose():
 def test_mock_sender_records_clamped_joint_command():
     sender = MockArmSender()
     command = sender.send_joint_targets([99.0] * NUM_JOINTS)
-    for value, (lower, upper) in zip(command["q"], PLACEHOLDER_JOINT_LIMITS_RAD):
+    for value, (lower, upper) in zip(command["q"], JOINT_LIMITS_RAD):
         assert lower <= value <= upper
     assert sender.sent == [command]
     assert "MOCK" in command["note"]

@@ -31,14 +31,26 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 | IP | `192.168.123.50` (fix, a közös robot-hálón — lásd [docs/09-robot-halozat.md](docs/09-robot-halozat.md)); a saját Wi-Fi hotspotján továbbra is `192.168.0.100` |
 | SSH | kulcsos, jelszó nélkül — `wheeltec@192.168.123.50`, kulcs: `~/.ssh/pickerbot_mini` |
 | Sudo jelszó | `dongguan` (gyári alapértelmezett — ugyanaz, mint a Wi-Fi hotspot jelszava) |
-| Státusz | élő, tesztelt irányítópult 2026-08-25 óta; oktatási platform terve kész, generálása folyamatban |
+| Státusz | élő, tesztelt irányítópult 2026-08-25 óta; kézi vezérlés élőben megerősítve 2026-09-18; oktatási platform terve kész, generálása folyamatban |
+| Webes vezérlőpult (LAN-on bárkinek) | `http://192.168.123.50:8901/control_panel.html` — **automatikusan indul bekapcsoláskor** (systemd, lásd lent), a robot-hálóra (Wi-Fi vagy kábel, lásd [docs/09-robot-halozat.md](docs/09-robot-halozat.md)) csatlakozó bármelyik géppel elérhető, nem kell SSH vagy kézi indítás |
+
+## Kolléga-teszteléshez: mindent automatikusan indít a robot
+
+**2026-09-18 óta:** a robot bekapcsolásakor/reboot után magától elindul minden, ami a webes vezérlőpulthoz kell — SSH és kézi parancs NEM szükséges. Csak csatlakozni kell a robot-hálóra (lásd [docs/09-robot-halozat.md](docs/09-robot-halozat.md): Wi-Fi AP vagy kábel a gateway PC-n át), és megnyitni: `http://192.168.123.50:8901/control_panel.html`.
+
+Roboton futó systemd service-ek (`sudo systemctl status <név>` az ellenőrzéshez):
+- `pickerbot-bringup` — `turn_on_wheeltec_robot.launch` (bázis-driver, `/cmd_vel`, `/arm_cmd`, `/odom`, `/imu`, `/PowerVoltage`)
+- `pickerbot-rosbridge` — `rosbridge_websocket` (9090-es port, ettől függ a bringup-tól)
+- `pickerbot-webui` — a `pickerbot_web_ui/` mappát szolgálja ki 8901-en (`control_panel.html`, `dashboard.html`)
+
+Mindhárom `enable`-ölve van, `Restart=on-failure`-ral — összeomlás után maguktól újraindulnak.
 
 ## ⚠️ Mielőtt hozzányúlnál
 
 - **USB-C a Jetsonon adatport, nem tápbemenet.** Csak a barrel jack (19V) vagy a robot saját akkuja indítja el.
 - **Az `/camera/toggle_ir` service hívása összeomlasztja a kameradrivert** és USB-szinten beragasztja az eszközt — lásd [docs/07-ismert-hibak.md](docs/07-ismert-hibak.md).
 - A gyári lemezen 5 alváz-kar kombináció csomagjai vannak egy image-ben; a mi példányunkhoz **csak a `mini_mec_four_arm*` csomagok relevánsak** — a többihez generált kód ne nyúljon, ne is hivatkozzon rájuk.
-- **Nyitott kérdés (2026-09-18):** a `/cmd_vel` topic létezése/típusa ezen a konkrét robotpéldányon még nincs élőben megerősítve (a robot offline volt, amikor a kézi vezérlés épült) — lásd [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) "Első élő teszt" szakaszát, ez a lépés MINDENKÉPPEN kell a bázis-vezérlés éles használata előtt. A robotkar valós ízület-határai/topic-nevei sincsenek leolvasva — a kar-vezérlés addig MOCK-only marad.
+- **2026-09-18 élő teszt: `/cmd_vel` és `/arm_cmd` megerősítve, szoftverlánc (soros port, STM32, IMU/odom 20Hz) egészséges.** Ha mégsem mozog a bázis — se webről, se fizikai joystickről —, az hardveres ok (E-stop gomb, külön motor-tápkapcsoló, alacsony akkufeszültség), nem szoftverhiba. Lásd [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md) diagnosztika szakaszát. A robotkar gripper-értékének (`arm_cmd` `data[3]`) numerikus konvenciója még nincs kalibrálva — a kar-vezérlés addig MOCK-only marad.
 
 ## Licenc / szerzőség
 

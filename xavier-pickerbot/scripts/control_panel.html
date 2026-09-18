@@ -99,7 +99,7 @@
   .log .mock { color:var(--muted); }
   .log .sim { color:var(--warm); }
 
-  .camera-embed { border:0; width:100%; height:640px; background:var(--bg); }
+  .camera-embed { border:0; width:100%; height:420px; background:var(--bg); }
   .embed-note { font-size:0.72rem; color:var(--faint); padding:0.4rem 0.8rem; }
 </style>
 </head>
@@ -113,18 +113,12 @@
 
 <div class="banner">
   ⚠️ Ez a felület a bázis-vezérléshez valódi <code>/cmd_vel</code> parancsot tud küldeni, de csak explicit
-  ÉLESÍTÉS után. A karvezérlő panel mindig SZIMULÁCIÓ — nincs valós robotkar-topic bekötve, mert a
-  <code>mini_mec_four_arm_moveit_config</code> valós ízület-határai nincsenek leolvasva a robotról.
-  Részletek: <a href="../docs/08-kezi-vezerles.md" style="color:var(--warm);">docs/08-kezi-vezerles.md</a>.
+  ÉLESÍTÉS után. A karvezérlő panel mindig SZIMULÁCIÓ — a <code>/arm_cmd</code> topic és a j1/j2/j3 ízület-határ
+  (±45°) már élőben megerősítve van, de a gripper nyitott/zárt numerikus konvenciója nincs kalibrálva, ezért a
+  valós küldés még nincs bekötve. Részletek: <a href="../docs/08-kezi-vezerles.md" style="color:var(--warm);">docs/08-kezi-vezerles.md</a>.
 </div>
 
 <div class="grid">
-
-  <div class="panel wide">
-    <div class="panel-head"><span>Kamerák + LiDAR + 3D point cloud (meglévő irányítópult beágyazva)</span></div>
-    <div class="embed-note">A <code>dashboard.html</code> ugyanaz a fájl, amit ez a panel élőben megjelenít — nincs duplikálva. Ha a beágyazott iframe üresen marad, nyisd meg külön fülön a fenti linkkel.</div>
-    <iframe class="camera-embed" src="dashboard.html"></iframe>
-  </div>
 
   <div class="panel">
     <div class="panel-head">
@@ -173,16 +167,21 @@
         topic-nevei nincsenek leolvasva a robotról (lásd docs/08-kezi-vezerles.md).
       </div>
 
-      <div class="slider-row"><label>Ízület 1 (bázis-forgás)</label><input type="range" id="j0" min="-90" max="90" value="0"><span class="val" id="j0v">0°</span></div>
-      <div class="slider-row"><label>Ízület 2 (váll)</label><input type="range" id="j1" min="-68" max="68" value="0"><span class="val" id="j1v">0°</span></div>
-      <div class="slider-row"><label>Ízület 3 (könyök)</label><input type="range" id="j2" min="-108" max="108" value="0"><span class="val" id="j2v">0°</span></div>
-      <div class="slider-row"><label>Ízület 4 (csukló)</label><input type="range" id="j3" min="-90" max="90" value="0"><span class="val" id="j3v">0°</span></div>
+      <div class="slider-row"><label>j1_joint</label><input type="range" id="j0" min="-45" max="45" value="0"><span class="val" id="j0v">0°</span></div>
+      <div class="slider-row"><label>j2_joint</label><input type="range" id="j1" min="-45" max="45" value="0"><span class="val" id="j1v">0°</span></div>
+      <div class="slider-row"><label>j3_joint</label><input type="range" id="j2" min="-45" max="45" value="0"><span class="val" id="j2v">0°</span></div>
 
       <div class="gripper-row">
         <button id="gripOpen">Gripper: NYIT</button>
         <button id="gripClose">Gripper: ZÁR</button>
       </div>
     </div>
+  </div>
+
+  <div class="panel wide">
+    <div class="panel-head"><span>Kamerák + LiDAR + 3D point cloud (meglévő irányítópult beágyazva)</span></div>
+    <div class="embed-note">A <code>dashboard.html</code> ugyanaz a fájl, amit ez a panel élőben megjelenít — nincs duplikálva. Ha a beágyazott iframe üresen marad, nyisd meg külön fülön a fenti linkkel.</div>
+    <iframe class="camera-embed" src="dashboard.html"></iframe>
   </div>
 
   <div class="panel wide">
@@ -372,7 +371,7 @@ log('mock', "vezérlőpult betöltve — bázis: nincs élesítve, kar: mindig s
 // Ez a szekció szándékosan SOHA nem hív rosbridge-et. A csúszkák csak a
 // naplóba írnak, pontosan úgy, mint xavier_control/arm_control.py mock
 // szenderéé — lásd docs/08-kezi-vezerles.md, miért marad ez mock-only.
-['j0','j1','j2','j3'].forEach((id) => {
+['j0','j1','j2'].forEach((id) => {
   const slider = document.getElementById(id);
   const val = document.getElementById(id + 'v');
   slider.addEventListener('input', () => {
