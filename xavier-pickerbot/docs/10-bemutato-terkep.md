@@ -32,6 +32,8 @@ A JavaScript szintaxisellenőrzés és a szintetikus `OccupancyGrid`-megjelenít
 
 ## Következő, csak olvasó robotoldali ellenőrzés
 
+**Repoalapú indítási leltár (további robotművelet nélkül):** a `scripts/start_feeds.sh` önálló `roscore`-t és `rosbridge_websocket`-et is indít; ezek már a systemd-szolgáltatások feladatai. Ugyanez a szkript külön hívja a `wheeltec_camera.launch`, `wheeltec_lidar.launch`, `usb_cam_node` és `web_video_server` folyamatokat. Ebből a C70 és a LiDAR indítási jelöltje azonosítható, de az élő launch-fájlok tényleges tartalma, a LiDAR soros eszköze és az esetleges node-ütközések még nincsenek igazolva. A teljes szkriptet a jelenlegi bringup mellé ne futtasd. A következő lépés az élő launch-fájlok és eszköznevek csak olvasó ellenőrzése; csak ezután tervezhető külön szenzorindítás.
+
 A kulcsos SSH-hozzáférés ezen a gépen már működik, a segédprogram a helyi Documents/Codex/pickerbot-access/connect.ps1 fájl. A parancsok nem indítanak új drivert és nem mozgatják a robotot.
 
 ```bash

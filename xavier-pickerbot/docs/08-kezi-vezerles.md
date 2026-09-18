@@ -44,7 +44,7 @@ Ha az első élő teszten a robot gyorsabban mozog a vártnál ezekkel az érté
 
 Ne kezdd el ezt a listát, amíg nincs valaki a robot közelében, aki fizikailag el tudja kapcsolni az áramot (tápkapcsoló/battery), és amíg nincs meg a `rostopic`-os megerősítés.
 
-1. **SSH-kapcsolat + roscore él.** `ssh -i ~/.ssh/pickerbot_mini wheeltec@192.168.123.50`, ellenőrizd, hogy `roscore` fut (vagy indítsd el `scripts/start_feeds.sh`-val, ami már úgyis elindítja).
+1. **SSH-kapcsolat + ROS master él.** `ssh -i ~/.ssh/pickerbot_mini wheeltec@192.168.123.50`, majd `rosparam get /run_id` paranccsal ellenőrizd a már futó mastert. A `scripts/start_feeds.sh` külön `roscore` és rosbridge folyamatot is indít, ezért a jelenlegi systemd-szolgáltatások mellett ne futtasd.
 2. **`/cmd_vel` MEGLÉTÉNEK ellenőrzése ELŐSZÖR, mielőtt bármit küldenél:**
    ```bash
    rostopic list | grep cmd_vel
