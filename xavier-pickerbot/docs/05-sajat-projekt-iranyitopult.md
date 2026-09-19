@@ -1,6 +1,6 @@
 # Saját projekt #1 — élő webes irányítópult
 
-**2026-08-25-én szenzorokkal tesztelve.** A [scripts/control_panel.html](../scripts/control_panel.html) beágyazza a [scripts/dashboard.html](../scripts/dashboard.html) oldalt. A 2026-09-18-i mérésen a weboldal elérhető volt, de a kamera, LiDAR és SLAM publikálói hiányoztak. 2026-09-19-én a C70 képe Dockerből újra megjelent; a `/scan` és `/map` még hiányzik. Az aktuális laptopos nézet a [scripts/start-demo-view.ps1](../scripts/start-demo-view.ps1) indítóval érhető el; lásd [10-bemutato-terkep.md](10-bemutato-terkep.md).
+**2026-08-25-én szenzorokkal tesztelve.** A [scripts/control_panel.html](../scripts/control_panel.html) beágyazza a [scripts/dashboard.html](../scripts/dashboard.html) oldalt. A 2026-09-18-i mérésen a weboldal elérhető volt, de a kamera, LiDAR és SLAM publikálói hiányoztak. 2026-09-19-én a C70, a `/scan` és a valódi `/map` külön Docker-konténerekből újra megjelent. Az aktuális laptopos nézet a [scripts/start-demo-view.ps1](../scripts/start-demo-view.ps1) indítóval érhető el; lásd [10-bemutato-terkep.md](10-bemutato-terkep.md).
 
 ## Mit tud
 

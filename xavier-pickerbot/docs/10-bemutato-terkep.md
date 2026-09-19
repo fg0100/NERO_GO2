@@ -40,11 +40,21 @@ A `/dev/RgbCam → /dev/video0` kamera szabad volt, és a 640×480 YUYV módot 3
 
 A laptopon a [scripts/start-demo-view.ps1](../scripts/start-demo-view.ps1) helyi HTTP-szervert és SSH-alagutat indít, majd a friss `dashboard.html` oldalt nyitja meg. A [scripts/stop-demo-view.ps1](../scripts/stop-demo-view.ps1) ezeket a helyi folyamatokat állítja le. A laptopon a dashboard és az alagúton át elért videószerver is HTTP 200 választ adott. A roboton korábban telepített 8901-es weboldal továbbra is a régi HTML-t szolgálja ki; nem írtuk át. A kamera tényleges képtartalmának helyi exportját az automatikus jóváhagyási ellenőrzés érzékeny felvétel lehetősége miatt elutasította, ezért a kép vizuális minősége nincs igazolva. A webes folyam és a ROS-képkockák működését igazoltuk. A mérési MJPEG ideiglenes fájlját töröltük.
 
-Az alváz bringup, a rosbridge, a webui, a gyári launch-fájlok és a firmware nem változtak. A roboton két új Docker-konténer és egy buildkontextus maradt; az új laptopos nézet most fut. A `/scan` és a `/map` továbbra is hiányzik. Leállítás és újbóli indítás: [docker/sensors/README.md](../docker/sensors/README.md).
+Az alváz bringup, a rosbridge, a webui, a gyári launch-fájlok és a firmware nem változtak. A roboton ebben a szakaszban két új Docker-konténer és egy buildkontextus maradt; az új laptopos nézet elindult. A `/scan` és a `/map` ekkor még hiányzott. Leállítás és újbóli indítás: [docker/sensors/README.md](../docker/sensors/README.md).
 
-## További robotoldali ellenőrzés
+## 2026-09-19: LiDAR és élő SLAM-térkép
 
-**Repoalapú indítási leltár (további robotművelet nélkül):** a `scripts/start_feeds.sh` önálló `roscore`-t és `rosbridge_websocket`-et is indít; ezek már a systemd-szolgáltatások feladatai. Ugyanez a szkript külön hívja a `wheeltec_camera.launch`, `wheeltec_lidar.launch`, `usb_cam_node` és `web_video_server` folyamatokat. Ebből a C70 és a LiDAR indítási jelöltje azonosítható, de az élő launch-fájlok tényleges tartalma, a LiDAR soros eszköze és az esetleges node-ütközések még nincsenek igazolva. A teljes szkriptet a jelenlegi bringup mellé ne futtasd. A következő lépés az élő launch-fájlok és eszköznevek csak olvasó ellenőrzése; csak ezután tervezhető külön szenzorindítás.
+A gyári LiDAR-node fordított állománya és három saját megosztott könyvtára a roboton megvolt. Az első teljes újrafordítás túl nagy PCL-függőségi lánca helyett ezeket a meglévő állományokat külön ARM64 Noetic Docker-képbe csomagoltuk; a gyári forrást nem módosítottuk. A buildkontextus `/home/wheeltec/pickerbot-lidar-build-20260919/`, az image `pickerbot/lidar:noetic-20260919`. A pontos állományok, SHA-256 értékek, paraméterek és visszaállítás: [docker/lidar/README.md](../docker/lidar/README.md). A képen belüli `ldd` minden futásidejű függőséget megtalált. A `/dev/wheeltec_lidar` eszközt egyedül ez a konténer kapta meg; az alváz külön soros portjához nem nyúltunk.
+
+Az eltávolítható próbakonténerben a `/lslidar_driver_node` válaszolt és a `/scan` `laser` frame-ben kb. **12 Hz** sebességgel publikált. A `tf_echo odom_combined laser` élő transzformációt adott; a scan és az odometria időbélyegei az aktuális ROS-időben voltak. Ezután a próbakonténert leállítottuk, és ugyanebből az image-ből a `pickerbot-lidar` konténert `unless-stopped` szabállyal indítottuk. Második LiDAR-node nem fut.
+
+A gmapping külön, `pickerbot/slam:noetic-20260919` image-ben fut. Csak a `slam_gmapping` node-ot indítja, nem a gyári `mapping.launch` teljes láncát. A konfiguráció és visszaállítás: [docker/slam/README.md](../docker/slam/README.md). A próbakonténerben a gmapping naplója feldolgozott scane-ket és sikeres scanillesztést mutatott, majd a `/map` `nav_msgs/OccupancyGrid` publikálója megjelent. Egy 384×384 cellás, 0,05 m felbontású rácsban 4559 szabad és 412 foglalt cellát mértünk; nyolc másodperc alatt öt külön időbélyegű és különböző tartalmú térképüzenet érkezett. A próbakonténert leállítottuk, és a `pickerbot-slam` konténert `unless-stopped` szabállyal indítottuk. A tartós változatban a `/map` újra elérhető volt. Az alváz node-ja eközben tovább válaszolt, és a három korábbi systemd-szolgáltatás aktív maradt.
+
+A robot állt a mérés közben. Az eltérő térképrácsok önmagukban nem bizonyítják, hogy haladás közben a környezet helyesen épül fel; ezt fizikai kontrollerrel, kéznél lévő leállítással kell kipróbálni. Az új Docker-konténerek reboot utáni indulása és a helyi irányítópult tényleges képi megjelenése is ellenőrzendő. A roboton most négy új Docker-konténer fut: `pickerbot-c70`, `pickerbot-web-video`, `pickerbot-lidar`, `pickerbot-slam`.
+
+## Állapotellenőrzés a következő alkalommal
+
+Az eredeti `scripts/start_feeds.sh` önálló `roscore`-t és `rosbridge_websocket`-et is indítana; ezeket most a systemd-szolgáltatások adják. Az Astra kamera továbbra sem fut. A teljes régi szkriptet a jelenlegi rendszer mellé ne indítsd, mert duplázhatja a node-okat és a portokat.
 
 A kulcsos SSH-hozzáférés ezen a gépen már működik, a segédprogram a helyi Documents/Codex/pickerbot-access/connect.ps1 fájl. A parancsok nem indítanak új drivert és nem mozgatják a robotot.
 
@@ -55,6 +65,7 @@ ip -br addr
 ip -br link
 systemctl status pickerbot-bringup pickerbot-rosbridge pickerbot-webui --no-pager
 systemctl cat pickerbot-bringup pickerbot-rosbridge pickerbot-webui
+sudo docker ps --format '{{.Names}} {{.Status}}'
 ss -ltnp | grep -E ':(8080|8901|9090|11311)\b'
 rostopic info /PowerVoltage
 timeout 8 rostopic echo -n 1 /PowerVoltage
@@ -64,13 +75,13 @@ rostopic info /map
 rosnode list
 ```
 
-Az USB-LAN adapteren ellenőrizd a `192.168.123.50/24` címet és a fizikai linket. A dokumentált három szolgáltatás nem bizonyítja, hogy a C70, a LiDAR, a videószerver és a SLAM is indul. Az ezekhez tartozó meglévő indítási láncot előbb fel kell térképezni; a régi `scripts/start_feeds.sh` szkriptet ne indítsd párhuzamosan vakon.
+Az USB-LAN adapteren ellenőrizd a `192.168.123.50/24` címet és a fizikai linket. A három systemd-szolgáltatás és a négy Docker-konténer állapotát külön ellenőrizd; a `running` állapot mellett a fenti ROS-témák friss üzenetei is szükségesek. A 8080-as portnak csak a robot `127.0.0.1` címén szabad figyelnie.
 
 **Megismétlődés megelőzése:** a rendszerindításkor a systemd már elindítja az egyetlen, helyes modellű bringupot. Kézzel ne futtasd mellé a `turn_on_wheeltec_robot.launch` fájlt vagy a régi `start_feeds.sh` szkriptet; előbb a futó node-okat és folyamatokat ellenőrizd. A drop-in eltávolításával és `systemctl daemon-reload` hívással az eredeti service konfiguráció visszaállítható, de ez ismét a rossz alapértelmezett modellt használná.
 
-## A gmapping diagnózisa
+## A gmapping további ellenőrzése
 
-Csak akkor kezdd, ha a `/scan`-nek már van publikálója és friss üzenete. A gyári `mapping.launch` egészét ne indítsd a futó bringup mellé, mert az alvázvezérlést is újraindíthatja.
+A `/scan` és a `/map` jelenleg publikál. A gyári `mapping.launch` egészét ne indítsd a futó bringup mellé, mert az alvázvezérlést is újraindíthatja. Ha reboot után eltűnik a térkép, előbb a Docker-konténerek állapotát, a LiDAR-linket, a scan és odometria időbélyegeit, majd a TF-útvonalat ellenőrizd.
 
 ```bash
 rostopic hz /scan
@@ -82,12 +93,12 @@ rosrun tf tf_echo odom_combined laser
 
 Jegyezd fel ugyanabban a mérési ablakban a `/scan/header.frame_id` és `stamp`, az `/odom` és `/tf` időbélyegeit, a ROS-időt (`rosparam get /use_sim_time`, `rostopic echo -n 1 /clock` csak ha szimulált idő aktív), valamint a TF-útvonalat a scan frame-jétől az `odom_combined` frame-ig. A korábbi `MessageFilter [target=odom_combined]: Dropped 100.00%` hiba okát csak ebből lehet azonosítani: lehet hiányzó transzformáció, rossz frame név, túl régi/jövőbeli stamp vagy késő TF. A `base_footprint → laser` statikus kapcsolat önmagában kevés.
 
-A SLAM indítását a meglévő bringup pontos tartalma alapján külön, Dockerben tervezd meg úgy, hogy ne indítson második `/wheeltec_robot` vagy szenzor-drivert. A cél igazolása: a `/map`-nek tényleges publikálója van, legalább két friss `OccupancyGrid` üzenet érkezik mozgás közben, és a rács tartalma változik. Az egyetlen latchelt térképüzenet még nem bizonyítja az épülő térképet.
+A külön Dockeres SLAM most fut, második `/wheeltec_robot` nélkül. A következő cél annak igazolása, hogy fizikai kontrolleres mozgás közben legalább két friss `OccupancyGrid` üzenet érkezik és a helyesen tájolt rács tartalma változik. Az álló helyzetben megfigyelt eltérő rácsok ezt még nem bizonyítják.
 
 ## Hálózat és főpróba
 
 A jelenlegi rosbridge elérhető a közös robot-hálóról a 9090-es porton. A systemd a gyári rosbridge_websocket.launch fájlt indítja külön témaszűkítés nélkül, a socket pedig 0.0.0.0:9090 címen figyel. A bemutatóhoz csak a kijelzőt adó laptopról legyen elérhető a vezérlési kapcsolat; a rosbridge téma- és szolgáltatáslistáját a tényleges használathoz kell szűkíteni. A robot gyári rendszerének módosítása helyett új robotoldali szoftver csak Dockerben fusson. A már létező, hoszton futó három systemd szolgáltatás és ez a szabály közti eltérést a tulajdonossal tisztázni kell, mielőtt a host szolgáltatásait átállítjuk.
 
-Kijelzőnek elsőként a laptophoz kötött külső monitort használd, és a `control_panel.html` oldalt nyisd meg teljes képernyőn. A képen a C70 és a `/map` panel egymás mellett van. Ha a térkép csak „várakozás” vagy „nem frissül” állapotot mutat, a bemutató térképes része még nincs kész; ne helyettesítsd a nyers `/scan` panellel. A laptop és a külső monitor kapcsolatát, felbontását és a robotra telepített új HTML-t a helyszínen kell igazolni.
+Kijelzőnek elsőként a laptophoz kötött külső monitort használd, és a `scripts/start-demo-view.ps1` indítóval megnyitott helyi `dashboard.html` oldalt tedd teljes képernyőre. A C70 és a `/map` panel egymás mellett van. Ha a térkép csak „várakozás” vagy „nem frissül” állapotot mutat, a bemutató térképes része nem kész; ne helyettesítsd a nyers `/scan` panellel. A laptop és a külső monitor kapcsolatát, felbontását és a tényleges képminőséget a helyszínen kell igazolni.
 
 Mozgáspróbát csak feltöltött akkumulátorral, a `/PowerVoltage` friss értékének ellenőrzése után, rendezett kábelekkel, a kerekektől távol lévő tárgyakkal, és kéznél levő **fizikai** leállítással végezz. A korábbi webes E-STOP nem állította meg időben a mozgást; ennek oka nincs bizonyítva. A fizikai kontroller működéséről korábbi felhasználói beszámoló van, a friss reboot utáni főpróba még hiányzik. A kar webes panelje továbbra is szimuláció, a `/camera/toggle_ir` hívást nem szabad használni.

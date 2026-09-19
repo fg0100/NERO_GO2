@@ -1,3 +1,4 @@
 systemd/** text eol=lf
 docker/**/Dockerfile text eol=lf
 docker/**/*.sh text eol=lf
+docker/**/*.launch text eol=lf
