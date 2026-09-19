@@ -125,3 +125,19 @@ Futtatás (Windows terminálból, `-t` kötelező a pty-allokációhoz):
 ```
 ssh -t -i ~/.ssh/pickerbot_mini wheeltec@192.168.123.50 "source /opt/ros/noetic/setup.bash; python3 /home/wheeltec/arm_jog.py"
 ```
+
+## 2026-09-19: joystickkel előidézett karhiba, újraindítás után is
+
+A felhasználó szerint a robot földre helyezése után a korábban lelógó kar nem emelkedett fel a várt helyzetbe. A fizikai joystick egyik irányában a kar a mechanikai határon túl akar menni: daráló hang és sípolás hallatszik. Ezután a fel-le irányú mozgás nem normális; újraindítás után is jelentkezik. A felhasználó a talp fölötti első fel-le ízületet gyanítja, de a pontos hajtás még nincs azonosítva. A hang önmagában nem bizonyít fogaskeréksérülést; túlterhelés, elakadás, elállított nullpont vagy sérült hajtás egyaránt nyitott lehetőség. **További joystick- és ROS-karpróbát ne végezzünk, amíg az érintett ízületet áramtalanítva meg nem vizsgáltuk.** A kart alá kell támasztani, a hajtást nem szabad erővel átforgatni.
+
+Olvasó jellegű vizsgálat történt, mozgásparancs nélkül:
+
+- Az újraindítás utáni `/PowerVoltage` érték **25,131 V** volt. A 2026-09-18-i 17,74 V-os lemerülés tehát a mostani jelenséget önmagában nem magyarázza.
+- A `/arm_cmd` típusa `std_msgs/Float32MultiArray`; egyetlen feliratkozója a `/wheeltec_robot`, **nincs ROS-publikálója**. A Jetsonon nem fut `joy` vagy kar-teleop node, és nem látszik `/dev/input/js*`. Ez alapján a használt fizikai joystick valószínűleg közvetlenül az alsó vezérlőhöz kapcsolódik; ezt a kábelezés/vevőegység fizikai ellenőrzése igazolhatja. A webes vezérlés szoftveres korlátozása ezt a joystick-utat nem védené.
+- A `/joint_states` üzenetben minden pozíció nulla, publikálója a gyári `joint_state_publisher`. Ez modellállapot, **nem mért szervópozíció**; ebből nem tudható, hol van ténylegesen a kar. A gyári `wheeltec_robot.cpp` `/arm_cmd` callbackje három célértéket továbbít soros vonalon, valós ízületpozíciót és szervóhibát nem publikál.
+- A `wheeltec_robot.cpp` destruktora szabályos leálláskor a bázisnak nulla sebességet, majd a karnak `[0, 1.5707, 0.3917, 0]` célt küld. A második ízület 1,5707 rad célja nagyobb, mint a betöltött `mini_mec_moveit_four.urdf` ±0,785 rad határa. Nem bizonyított, hogy a robot újraindításakor ez a kódrész ténylegesen végrehajtódott, illetve hogy a modellhatár megfelel-e a fizikai határnak. Emiatt **ne állítsuk le vagy indítsuk újra próbaképpen a bringupot** a kar mechanikai ellenőrzése előtt. A gyári fájlt nem módosítottuk.
+- A régi `/home/wheeltec/arm_jog.py` induláskor azonnal elküldi a `[0.05, 0, 0, 0]` célt, miközben a valós kezdőpozíciót nem tudja lekérdezni. Ezt az eszközt most ne indítsuk el.
+
+Webes, valóban működő karvezérléshez előbb az érintett fel-le ízület állapotát és a gyári joystick/alsó vezérlő útját kell tisztázni. Utána a három parancsolt ízület valós nullahelyét és biztonságos fizikai tartományát, valamint a megfogó konvencióját kell egyenként megerősíteni. A jelenlegi `control_panel.html` kar része szándékosan csak szimuláció; élő gombok hozzáadása a mostani, visszajelzés nélküli állapotban újabb végállásnak feszítést okozhatna.
+
+A teljesítményről ugyanebben a vizsgálatban: a C70 ROS-forrása kb. 15 kép/s sebességgel publikált, míg a `/map` kb. 0,8–1 üzenet/s sebességgel frissült. A laptop helyi MJPEG-alagútja nem válaszolt, ezért a dashboard a nagyobb késleltetésű nyers ROS-képet használta. A `pickerbot-slam` konténer kb. 32% CPU-t használt, 5,2 GiB memória rendelkezésre állt. A kamera megjelenítési késése és a térkép frissítési sebessége külön optimalizálási feladat; nem magyarázza a kar mechanikai hangját.

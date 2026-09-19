@@ -1,5 +1,7 @@
 # Xavier Pickerbot Mini
 
+**2026-09-19 karfigyelmeztetés:** a fizikai joystickkel a talp fölötti fel-le ízület végállásnál daráló hangot és sípolást ad, utána rendellenesen mozog. A karon további mozgáspróbát ne végezz, amíg áramtalanítva át nem vizsgálták. A webes karvezérlés továbbra is szimuláció. A mérések és a gyári leállítási parancs kockázata: [docs/08-kezi-vezerles.md](docs/08-kezi-vezerles.md).
+
 **Wheeltec gyártmányú, "Xavier Pickerbot Mini" néven értékesített oktatási robot** — mecanum kerekes alváz + 4 tengelyű robotkar, NVIDIA Jetson Xavier NX fedélzeti számítógéppel, LiDAR-ral és Orbbec Astra RGBD mélységkamerával.
 
 Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő repó a Unitree Go2 négylábút dolgozza fel, ez a mappa ugyanazt csinálja a másik robotunkkal, a Xavierrel. Két külön gép, két külön hardver, közös cél: nyílt, magyar nyelvű tudásbázis a Neumann Robotics robotjairól, mielőtt bárki hozzányúlna.
