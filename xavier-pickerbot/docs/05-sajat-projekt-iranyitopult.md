@@ -1,6 +1,6 @@
 # Saját projekt #1 — élő webes irányítópult
 
-**2026-08-25-én szenzorokkal tesztelve.** A [scripts/control_panel.html](../scripts/control_panel.html) beágyazza a [scripts/dashboard.html](../scripts/dashboard.html) oldalt. A 2026-09-18-i friss hálózati mérésen a weboldal elérhető volt, de a kamera, LiDAR és SLAM publikálói hiányoztak; lásd [10-bemutato-terkep.md](10-bemutato-terkep.md).
+**2026-08-25-én szenzorokkal tesztelve.** A [scripts/control_panel.html](../scripts/control_panel.html) beágyazza a [scripts/dashboard.html](../scripts/dashboard.html) oldalt. A 2026-09-18-i mérésen a weboldal elérhető volt, de a kamera, LiDAR és SLAM publikálói hiányoztak. 2026-09-19-én a C70 képe Dockerből újra megjelent; a `/scan` és `/map` még hiányzik. Az aktuális laptopos nézet a [scripts/start-demo-view.ps1](../scripts/start-demo-view.ps1) indítóval érhető el; lásd [10-bemutato-terkep.md](10-bemutato-terkep.md).
 
 ## Mit tud
 
@@ -30,7 +30,7 @@ python -m http.server 8901
 
 Majd nyisd meg: `http://127.0.0.1:8901/dashboard.html` — **fontos: ne `file://`-ként**, mert az statikus pillanatképként fut, a WebSocket-kapcsolat el sem indul.
 
-Nyers kamera-lista debughoz: `http://192.168.123.50:8080/` (csak sima 8-bites RGB/C70 képekhez jó, a Depth itt `cv_bridge` hibát dob — azt a dashboard saját canvas-render-je oldja meg).
+**Mai hozzáférés:** a videókiszolgáló csak a robot `127.0.0.1:8080` címén figyel. A laptopos indító SSH-alagutat nyit, így a helyi `http://127.0.0.1:8080/` kamera-lista elérhető. A korábbi `http://192.168.123.50:8080/` cím szándékosan nem működik. A Depth 16UC1 adatát továbbra is a dashboard saját canvas-renderje kezeli.
 
 ## Technikai buktatók, amiket ez a projekt oldott meg
 

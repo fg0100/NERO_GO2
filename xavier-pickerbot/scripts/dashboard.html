@@ -153,12 +153,14 @@
 
 <script>
 const ROBOT_IP = "192.168.123.50";
+// A kamerastream csak a robot loopback-címén él; a laptop SSH-alagútja adja a helyi 8080-as portot.
+const WEB_VIDEO_HOST = "127.0.0.1";
 const WEB_VIDEO_PORT = 8080;
 const ROSBRIDGE_PORT = 9090;
 
 // ---------- image streams via web_video_server (csak sima 8-bit szinű képekhez jó) ----------
-document.getElementById('rgbImg').src = `http://${ROBOT_IP}:${WEB_VIDEO_PORT}/stream?topic=/camera/rgb/image_raw`;
-document.getElementById('c70Img').src = `http://${ROBOT_IP}:${WEB_VIDEO_PORT}/stream?topic=/usb_cam/image_raw`;
+document.getElementById('rgbImg').src = `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/camera/rgb/image_raw`;
+document.getElementById('c70Img').src = `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/usb_cam/image_raw`;
 
 // ---------- rosbridge connection ----------
 const ros = new ROSLIB.Ros({ url: `ws://${ROBOT_IP}:${ROSBRIDGE_PORT}` });
@@ -302,7 +304,7 @@ function wireToggle(checkboxId, wrapId, service, labelOnText, labelOffText, onCh
 
 wireToggle('toggleColor', 'toggleColorWrap', svcColor, 'be', 'ki', (on) => {
   document.getElementById('rgbImg').src = on
-    ? `http://${ROBOT_IP}:${WEB_VIDEO_PORT}/stream?topic=/camera/rgb/image_raw&_=${Date.now()}`
+    ? `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/camera/rgb/image_raw&_=${Date.now()}`
     : '';
 });
 wireToggle('toggleDepth', 'toggleDepthWrap', svcDepth, 'be', 'ki');

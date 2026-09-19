@@ -18,6 +18,7 @@ Ez az alprojekt a [NERO_GO2](../) repó testvér-dokumentációja: amíg a fő r
 - [docs/10-bemutato-terkep.md](docs/10-bemutato-terkep.md) — a C70 kamera + valódi `/map` bemutató állapota és ellenőrzési sorrendje
 - [docs/09-robot-halozat.md](docs/09-robot-halozat.md) — **a közös robot-hálózat** (2026-09-18): gateway PC + TP-Link router, IP-kiosztás, elérés, hibaelhárítás
 - [scripts/](scripts/) — a ténylegesen használt kapcsolódó/indító szkriptek, másolható egy az egyben
+- [docker/sensors/](docker/sensors/) — a C70 kamera és a csak helyben elérhető videófolyam Docker-indítása
 - [inventory.html](inventory.html) — vizuális szoftver-/tárhely-leltár a robot lemezéről
 - [pickerbot-akademia-terv.html](pickerbot-akademia-terv.html) — a teljes Akadémia-terv, 11 architektúra-ábrával
 
@@ -49,6 +50,8 @@ Mindhárom `enable`-ölve van, `Restart=on-failure`-ral — összeomlás után m
 **2026-09-18 korábbi, helyreállítás előtti mérés:** a 8901-es vezérlőpult és a 9090-es rosbridge elérhető volt, de a `/PowerVoltage` nem adott értéket, és a `/scan`, `/usb_cam/image_raw`, `/map` témáknak nem volt publikálója. A 8080-as kamera-stream port sem válaszolt. Az új webes térképpanel a `/map` hiányát jelzi; nem rajzol a nyers `/scan`-ből ál-térképet.
 
 **2026-09-18, reboot után is ellenőrzött helyreállítás:** az árva bringup és a systemd-példány ütközése megszűnt, a szolgáltatás a helyes `mini_mec_moveit_four` modellt használja. Az első rebootpróba egy további indulási versenyt fedett fel: a rosbridge saját ROS mastert próbált indítani, mielőtt a bringup mastere elkészült. A rosbridge most megvárja a `/run_id` paramétert. A második reboot után pontosan egy bringup fut, a `/wheeltec_robot` válaszol, az odometria és az IMU friss, a feszültség 23,33 V körüli. Mindhárom `pickerbot-*` szolgáltatás aktív és engedélyezett. A kamera, a LiDAR és a `/map` még nem fut, és a helyi weboldal-módosítások nincsenek a roboton. A két konfigurációs fájl a [systemd/](systemd/) mappában, részletek: [docs/10-bemutato-terkep.md](docs/10-bemutato-terkep.md).
+
+**2026-09-19 frissítés:** a C70 kamera külön Docker-konténerben már publikálja a `/usb_cam/image_raw` témát, mérve kb. 15 kép/s sebességgel. A webes videó csak a robot `127.0.0.1:8080` címén érhető el; a laptop [scripts/start-demo-view.ps1](scripts/start-demo-view.ps1) szkriptje SSH-alagúton át nyitja meg a helyi irányítópultot. A robot 8901-es, korábban telepített weboldala még nem tartalmazza az új térképpanelt. A `/scan` és `/map` továbbra sem fut; részletek: [docs/10-bemutato-terkep.md](docs/10-bemutato-terkep.md).
 
 ## ⚠️ Mielőtt hozzányúlnál
 
