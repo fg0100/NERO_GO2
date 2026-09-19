@@ -39,6 +39,7 @@
   #mapCanvas { max-width:100%; max-height:100%; width:auto; height:auto; image-rendering:pixelated; }
   .map-placeholder { max-width:32rem; padding:1rem; color:var(--muted); font-size:0.8rem; line-height:1.5; text-align:center; }
   .map-meta { padding:0.4rem 0.8rem; color:var(--muted); font-size:0.7rem; border-top:1px solid var(--border); }
+  #c70Canvas { max-width:100%; max-height:100%; width:auto; height:auto; }
   @media (max-width:760px) { .demo-pair { grid-template-columns:1fr; } .panel.big { grid-column:1 / -1; } }
   .panel-head {
     display:flex; justify-content:space-between; align-items:center;
@@ -79,21 +80,14 @@
 
 <div class="grid">
 
-  <div class="panel">
-    <div class="panel-head">
-      <span>RGB kamera (Astra)</span>
-      <label class="toggle" id="toggleColorWrap">
-        <input type="checkbox" id="toggleColor" checked>
-        <span class="sw"></span><span class="lbl">be</span>
-      </label>
-    </div>
-    <div class="panel-body"><img id="rgbImg" src=""></div>
-  </div>
-
   <div class="demo-pair">
     <div class="panel">
       <div class="panel-head"><span>C70 kamera (kar)</span><span class="pill">/usb_cam/image_raw</span></div>
-      <div class="panel-body"><img id="c70Img" src="" alt="A kar C70 kamerájának képe"></div>
+      <div class="panel-body">
+        <img id="c70Img" src="" alt="A kar C70 kamerájának képe">
+        <canvas id="c70Canvas" width="640" height="480" aria-label="A kar C70 kamerájának képe" hidden></canvas>
+        <span class="stat" id="c70Status" role="status">Kamera: kapcsolódás...</span>
+      </div>
     </div>
     <div class="panel">
       <div class="panel-head"><span>Épülő 2D térkép</span><span class="pill">/map · SLAM</span></div>
@@ -103,6 +97,17 @@
       </div>
       <div class="map-meta" id="mapStatus" role="status">Térkép: várakozás</div>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span>RGB kamera (Astra)</span>
+      <label class="toggle" id="toggleColorWrap">
+        <input type="checkbox" id="toggleColor" checked>
+        <span class="sw"></span><span class="lbl">be</span>
+      </label>
+    </div>
+    <div class="panel-body"><img id="rgbImg" src=""></div>
   </div>
 
   <div class="panel">
@@ -160,7 +165,8 @@ const ROSBRIDGE_PORT = 9090;
 
 // ---------- image streams via web_video_server (csak sima 8-bit szinű képekhez jó) ----------
 document.getElementById('rgbImg').src = `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/camera/rgb/image_raw`;
-document.getElementById('c70Img').src = `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/usb_cam/image_raw`;
+const c70Img = document.getElementById('c70Img');
+c70Img.src = `http://${WEB_VIDEO_HOST}:${WEB_VIDEO_PORT}/stream?topic=/usb_cam/image_raw`;
 
 // ---------- rosbridge connection ----------
 const ros = new ROSLIB.Ros({ url: `ws://${ROBOT_IP}:${ROSBRIDGE_PORT}` });
@@ -238,6 +244,69 @@ function base64ToBytes(b64) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
+
+// A helyi SSH-alagút megszakadhat úgy is, hogy a dashboard tovább fut.
+// Ilyenkor a meglévő rosbridge kapcsolaton át rajzolunk ritkított RGB képet.
+const c70Canvas = document.getElementById('c70Canvas');
+const c70Ctx = c70Canvas.getContext('2d');
+const c70Status = document.getElementById('c70Status');
+let c70FallbackStarted = false;
+let c70MjpegStarted = false;
+let lastC70Frame = 0;
+const c70Topic = new ROSLIB.Topic({
+  ros, name: '/usb_cam/image_raw', messageType: 'sensor_msgs/Image',
+  throttle_rate: 500, queue_length: 1
+});
+
+function startC70Fallback() {
+  if (c70FallbackStarted) return;
+  c70FallbackStarted = true;
+  c70Status.textContent = 'Kamera: tartalék ROS-kapcsolatra vár';
+  c70Img.hidden = true;
+  c70Topic.subscribe(msg => {
+    const w = msg.width, h = msg.height, step = msg.step;
+    if (msg.encoding !== 'rgb8' || !Number.isInteger(w) || !Number.isInteger(h) ||
+        w < 1 || h < 1 || w * h > 4000000 || step < w * 3) {
+      c70Status.textContent = 'Kamera: nem támogatott képformátum';
+      return;
+    }
+    let bytes;
+    try { bytes = typeof msg.data === 'string' ? base64ToBytes(msg.data) : msg.data; }
+    catch (err) { c70Status.textContent = 'Kamera: képadat hiba'; return; }
+    if (!bytes || bytes.length < step * h) return;
+    if (c70Canvas.width !== w) c70Canvas.width = w;
+    if (c70Canvas.height !== h) c70Canvas.height = h;
+    const frame = c70Ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const src = y * step + x * 3;
+        const dst = (y * w + x) * 4;
+        frame.data[dst] = bytes[src];
+        frame.data[dst + 1] = bytes[src + 1];
+        frame.data[dst + 2] = bytes[src + 2];
+        frame.data[dst + 3] = 255;
+      }
+    }
+    c70Ctx.putImageData(frame, 0, 0);
+    c70Canvas.hidden = false;
+    lastC70Frame = Date.now();
+    c70Status.textContent = `Kamera: ROS-kép · ${w}×${h}`;
+  });
+}
+
+c70Img.addEventListener('load', () => {
+  c70MjpegStarted = true;
+  c70Status.textContent = 'Kamera: élő MJPEG';
+});
+c70Img.addEventListener('error', startC70Fallback);
+setTimeout(() => {
+  if (!c70MjpegStarted && !c70Img.naturalWidth) startC70Fallback();
+}, 5000);
+setInterval(() => {
+  if (c70FallbackStarted && lastC70Frame && Date.now() - lastC70Frame > 15000) {
+    c70Status.textContent = 'Kamera: a ROS-kép nem frissül (15+ mp)';
+  }
+}, 2000);
 
 // ---------- Depth kép saját canvas-renderrel (web_video_server nem tud 16UC1-et bgr8-ra konvertálni) ----------
 const depthTopic = new ROSLIB.Topic({

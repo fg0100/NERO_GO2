@@ -40,6 +40,12 @@ A `/dev/RgbCam → /dev/video0` kamera szabad volt, és a 640×480 YUYV módot 3
 
 A laptopon a [scripts/start-demo-view.ps1](../scripts/start-demo-view.ps1) helyi HTTP-szervert és SSH-alagutat indít, majd a friss `dashboard.html` oldalt nyitja meg. A [scripts/stop-demo-view.ps1](../scripts/stop-demo-view.ps1) ezeket a helyi folyamatokat állítja le. A laptopon a dashboard és az alagúton át elért videószerver is HTTP 200 választ adott. A roboton korábban telepített 8901-es weboldal továbbra is a régi HTML-t szolgálja ki; nem írtuk át. A kamera tényleges képtartalmának helyi exportját az automatikus jóváhagyási ellenőrzés érzékeny felvétel lehetősége miatt elutasította, ezért a kép vizuális minősége nincs igazolva. A webes folyam és a ROS-képkockák működését igazoltuk. A mérési MJPEG ideiglenes fájlját töröltük.
 
+### 2026-09-19: Üres kameramező a laptop böngészőjében
+
+A helyi `8902`-es dashboard tovább működött, de a `127.0.0.1:8080` SSH-alagút időnként megszakadt, ezért a C70 mező üres lett. Egy újraindítás után a helyi MJPEG-végpont HTTP 200 választ adott, 3 másodperc alatt 2,9 MB képadattal, később az alagút ismét kiesett. A roboton a `/usb_cam/image_raw` továbbra is `rgb8`, 640×480, `step=1920` formátumú; a rosbridge és a `/map` működött. A hiba a laptop videókapcsolatánál volt, nem a kamera ROS-publikálásánál.
+
+A [scripts/dashboard.html](../scripts/dashboard.html) a C70 és térkép párost most az oldal tetejére teszi, az inaktív Astra mező elé. A kameraállapot kiírja, hogy MJPEG vagy tartalék ROS-kép érkezik-e. MJPEG-hiba esetén a böngésző a meglévő `9090`-es rosbridge kapcsolaton feliratkozik a `/usb_cam/image_raw` témára, ritkított üzeneteket RGB canvason rajzol, és jelzi, ha a kép nem frissül. Az in-app böngészőben mind az „élő MJPEG”, mind a „ROS-kép · 640×480” állapot megjelent; a térkép közben 384×384 cellás friss üzeneteket mutatott. A vizuális képminőséget továbbra is a felhasználónak kell megítélnie. A tömörített ROS-képhez a robot kamerakonténerét újra kellene építeni; ez a jelenlegi működéshez nem szükséges, ezért a roboton nem változtattunk.
+
 Az alváz bringup, a rosbridge, a webui, a gyári launch-fájlok és a firmware nem változtak. A roboton ebben a szakaszban két új Docker-konténer és egy buildkontextus maradt; az új laptopos nézet elindult. A `/scan` és a `/map` ekkor még hiányzott. Leállítás és újbóli indítás: [docker/sensors/README.md](../docker/sensors/README.md).
 
 ## 2026-09-19: LiDAR és élő SLAM-térkép
